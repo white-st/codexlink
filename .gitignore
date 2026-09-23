@@ -1,0 +1,31 @@
+# Local identity, projects, logs and signing keys
+.runtime/
+.codex/
+node_modules/
+*.log
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.pem
+*.key
+credentials*.json
+# Generated binaries and local tooling
+android/build/
+android/output/
+android/tools/
+public/downloads/
+*.apk
+*.aab
+*.exe
+*.msi
+# Editors and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+# Local review material
+.local-review/

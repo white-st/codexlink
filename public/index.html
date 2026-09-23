@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Codex Link · 项目工作台</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+  <header><div class="brand"><span class="brand-mark">C↗</span><div><strong>Codex Link</strong><small>让需求与电脑上的工作连接起来</small></div></div><div class="account-row"><span id="connection" class="pill">本机工作台</span><button id="logout" class="secondary hidden">退出登录</button></div></header>
+  <div class="scope"><span>账号与项目工作台</span><span id="connection-mode">正在连接工作台…</span></div>
+  <section id="connection-panel" class="connection-panel hidden"><strong>手机连接地址</strong><div id="connection-links"></div><p id="connection-note" class="muted"></p></section>
+  <section id="auth-panel" class="auth-card hidden">
+    <span class="eyebrow">欢迎使用 CODEX LINK</span><h1 id="auth-title">登录工作台</h1><p id="auth-hint" class="muted"></p>
+    <form id="auth-form">
+      <div id="setup-field" class="hidden"><label for="setup-code">本机设置码</label><input id="setup-code" type="password" autocomplete="off"><p class="muted">设置码在本机项目的 .runtime/setup-code.txt 中。</p></div>
+      <label for="username">账号</label><input id="username" autocomplete="username" minlength="3" maxlength="40" pattern="[a-zA-Z0-9_-]+" placeholder="字母、数字、下划线或短横线" required>
+      <label for="password">密码</label><input id="password" type="password" autocomplete="current-password" minlength="6" maxlength="128" placeholder="至少 6 位" required>
+      <button id="auth-submit" type="submit">登录</button><p id="auth-error" class="form-error" role="alert"></p>
+    </form>
+  </section>
+  <div id="app-panel" class="hidden">
+    <main>
+      <aside>
+        <div class="section-top"><h1>工作任务</h1><button id="refresh" class="icon-button" aria-label="刷新任务列表">↻</button></div>
+        <div class="tabs" role="tablist" aria-label="任务来源"><button id="mobile-tab" role="tab" aria-selected="true">手机任务</button><button id="desktop-tab" role="tab" aria-selected="false">电脑任务</button></div>
+        <p id="list-hint" class="muted"></p>
+        <label for="project-select">项目</label><select id="project-select"><option value="">全部可见项目</option></select>
+        <label for="search" class="sr-only">搜索可见任务</label><input id="search" placeholder="搜索当前列表" type="search">
+        <details id="project-create-box" class="management"><summary>＋ 新建手机项目</summary><form id="project-form"><label for="project-name">项目名称</label><input id="project-name" required maxlength="80" placeholder="例如：我的资料整理"><label for="project-level">预设等级</label><input id="project-level" type="number" min="0" max="9" value="0" required><p class="muted">默认私有。等级只在主动共享后生效。</p><button type="submit">创建私有项目</button></form></details>
+        <form id="task-form" class="management hidden"><label for="task-name">在当前项目中添加任务</label><div class="create-row"><input id="task-name" required maxlength="80" placeholder="任务名称"><button type="submit">＋ 添加</button></div></form>
+        <div id="task-list" class="task-list"></div>
+        <div class="aside-note"><strong>共享规则</strong><p>私有项目仅自己可见。共享后，等级达标的账号可以查看项目、对话和成果。</p></div>
+      </aside>
+      <section class="workspace">
+        <div id="project-info" class="project-info hidden">
+          <div class="section-top"><h2 id="current-project-name"></h2><span id="project-privacy" class="pill"></span></div>
+          <p id="project-id" class="path"></p><p id="project-rule" class="muted"></p>
+          <form id="project-settings" class="settings-row hidden"><label id="share-label" class="check"><input id="project-shared" type="checkbox">共享项目（允许符合等级的用户查看）</label><label id="grade-label">项目等级 <input id="edit-level" type="number" min="0" max="9" required></label><button type="submit" class="secondary">保存设置</button></form>
+        </div>
+        <div id="empty" class="empty"><span class="empty-icon">↗</span><h2>每个项目，有自己的空间</h2><p>选择一个项目，查看其中的任务。<br>也可以创建私有项目，让 Codex 帮你处理文件。</p><div class="example">私有内容只在本人账号下展示，共享内容按等级开放查看。</div></div>
+        <div id="detail" class="hidden">
+          <div class="detail-head"><div><span id="source" class="eyebrow"></span><h2 id="task-title"></h2></div><span id="task-status" class="pill"></span></div>
+          <div id="messages" class="messages" aria-live="polite"></div>
+          <div id="questions"></div>
+          <form id="composer" class="hidden"><label for="prompt">告诉 Codex 你想做什么</label><textarea id="prompt" rows="4" maxlength="12000" required placeholder="例如：在这个项目中创建一份工作计划…"></textarea><div class="composer-bottom"><span id="execution-hint" class="muted"></span><button id="reconcile" type="button" class="secondary">刷新状态</button><button id="stop" type="button" class="secondary" disabled>停止</button><button id="send" type="submit">发送需求</button></div></form>
+          <p id="readonly-hint" class="muted hidden"></p>
+          <div class="artifacts"><div class="section-top"><h3>项目文件</h3><button id="refresh-files" class="text-button">刷新文件</button></div><p class="muted">同一项目的任务共用项目文件。</p><div id="files" class="muted"></div></div>
+        </div>
+      </section>
+    </main>
+    <section class="account-settings">
+      <details id="admin-panel" class="management hidden"><summary>管理员 · 账号与密码</summary><p class="muted">管理员可查看已设置的账号密码。老账号需重新设置一次才能查看；修改密码后，该账号的所有设备需要重新登录。</p>
+        <form id="user-form" class="admin-form"><label>新账号<input id="new-username" autocomplete="off" required minlength="3" maxlength="40" pattern="[a-zA-Z0-9_-]+"></label><div class="password-field"><label for="new-password">初始密码</label><div class="password-input"><input id="new-password" type="password" autocomplete="new-password" required minlength="6" maxlength="128" placeholder="至少 6 位"><button id="show-new-password" type="button" class="secondary" aria-controls="new-password" aria-pressed="false">显示密码</button></div></div><label>等级<input id="new-level" type="number" min="0" max="9" value="0" required></label><button type="submit">创建普通账号</button></form>
+        <div id="user-list"></div>
+        <form id="admin-grade-form" class="admin-form"><label>项目编号<input id="admin-project-id" required placeholder="由项目所有者提供"></label><label>新等级<input id="admin-project-level" type="number" min="0" max="9" value="0" required></label><button type="submit" class="secondary">调整项目等级</button></form><p class="muted">可凭编号调整等级，但不会因此显示私有项目名称、任务或文件。</p>
+      </details>
+      <details id="my-password-panel" class="management"><summary>修改我的密码</summary><p class="muted">修改后，管理员可查看此账号的新密码。</p><form id="password-form" class="admin-form"><label>原密码<input id="old-password" type="password" autocomplete="current-password" minlength="6" maxlength="128" required></label><label>新密码<input id="next-password" type="password" autocomplete="new-password" minlength="6" maxlength="128" placeholder="至少 6 位" required></label><button type="submit">修改并重新登录</button></form></details>
+    </section>
+  </div>
+  <div id="error" role="alert" class="toast hidden"></div>
+  <footer>按账号与等级管理可见内容 · 共用本机 Codex 执行环境</footer>
+  <script type="module" src="/app.js"></script>
+</body></html>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.codexlink.mobile" android:versionCode="17" android:versionName="0.9.0">
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <application android:label="CodexLink" android:icon="@drawable/ic_launcher" android:theme="@style/AppTheme" android:allowBackup="false" android:fullBackupContent="false" android:dataExtractionRules="@xml/data_extraction_rules" android:usesCleartextTraffic="false" android:debuggable="false" android:supportsRtl="true">
+        <activity android:name=".MainActivity" android:exported="true" android:windowSoftInputMode="adjustResize" android:configChanges="orientation|screenSize|keyboardHidden">
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+        </activity>
+        <activity android:name=".VerificationActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".UpdateActivity" android:exported="false" android:configChanges="orientation|screenSize|keyboardHidden" />
+        <receiver android:name=".UpdateReceiver" android:exported="false" />
+    </application>
+</manifest>

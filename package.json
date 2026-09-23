@@ -1,0 +1,34 @@
+{
+  "name": "codexlink",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "start:background": "powershell -NoProfile -File scripts/start-service.ps1",
+    "network:local": "node scripts/configure-network.mjs local",
+    "network:lan": "node scripts/configure-network.mjs lan",
+    "network:remote": "node scripts/configure-network.mjs lan-remote",
+    "network:ddnsto": "node scripts/configure-network.mjs ddnsto",
+    "storage:configure": "node scripts/configure-storage.mjs",
+    "android:build": "powershell -NoProfile -ExecutionPolicy Bypass -File android/build.ps1",
+    "verify:android": "node scripts/verify-android.mjs",
+    "stop": "node scripts/stop.mjs",
+    "probe": "node scripts/probe.mjs",
+    "test": "node --test test/*.test.mjs",
+    "verify:live": "node scripts/verify-live.mjs",
+    "verify:controls": "node --test test/access.test.mjs",
+    "verify:isolation": "node scripts/verify-isolation.mjs",
+    "verify:access": "node scripts/verify-access-live.mjs",
+    "verify:execution": "node scripts/verify-execution-live.mjs",
+    "verify:storage": "node scripts/verify-storage-live.mjs",
+    "verify:remote": "node scripts/verify-remote.mjs",
+    "check:environment": "node scripts/check-environment.mjs",
+    "prepare:worker": "node scripts/prepare-worker.mjs",
+    "import:desktop": "node scripts/import-desktop.mjs"
+  },
+  "description": "通过安卓手机远程使用电脑上的 Codex，管理项目、任务、文件与常用技能。"
+}

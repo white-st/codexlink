@@ -1,0 +1,9 @@
+* text=auto
+*.mjs text eol=lf
+*.js text eol=lf
+*.java text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.ps1 text eol=crlf
+*.docx binary
+*.pptx binary
