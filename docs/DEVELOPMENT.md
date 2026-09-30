@@ -8,7 +8,7 @@ Node.js 22+、Windows PowerShell、Git。修改安卓端时另需 JDK 17 和 And
 npm test
 ```
 
-Node.js 测试采用独立目录和模拟 Codex，不发送模型任务，覆盖权限、存储、网络、附件、任务状态、交接和技能合同。合成 `.docx` / `.pptx` 样例位于 `test/fixtures/attachments`，没有使用私人文档。
+Node.js 测试采用独立目录和模拟 Codex，不发送模型任务，覆盖权限、存储、网络、附件、任务状态、交接和技能合同。桌面 IPC 测试覆盖状态修订、占用、断线、未知提交结果和文本输入兼容。合成 Office / 图片样例位于 `test/fixtures/attachments`，没有使用私人文档。
 
 安卓构建与 JVM 检查按 [ANDROID.md](ANDROID.md) 配置环境后运行：
 
@@ -28,7 +28,8 @@ npm run verify:android
 
 | 工具 | 用途 |
 | --- | --- |
-| `start-service.ps1` / `stop.mjs` | 隐藏启动和仅停止本工作台 |
+| `start-service.ps1` / `stop.mjs` | 通过独立 Windows 宿主隐藏启动和仅停止本工作台 |
+| `desktop-pipe.ps1` | 仅转接同一 Windows 身份的官方签名桌面进程固定本机管道；不是任意远程执行入口 |
 | `configure-network.mjs` | local / lan / lan-remote / ddnsto 配置 |
 | `configure-storage.mjs` | 新项目根目录配置，不搬迁旧项目 |
 | `import-desktop.mjs` | 停服后，按账号登记已有桌面任务，网页只读 |
@@ -40,7 +41,7 @@ npm run verify:android
 | --- | --- |
 | `verify-android.mjs` | Java + 独立 HTTP；需要本地 APK，Codex 使用替身 |
 | `verify-access-live.mjs` / `verify-remote.mjs` | 对应独立接口与权限验证，运行前阅读脚本 |
-| `verify-live.mjs`、`verify-execution-live.mjs`、`verify-storage-live.mjs`、`verify-attachments-live.mjs`、`verify-handoff-live.mjs`、`verify-skills-live.mjs` | 接触实际 Codex、文件或会话，会生成测试记录，可能使用账号额度；不能当作普通静态检查批量执行 |
+| `verify-live.mjs`、`verify-execution-live.mjs`、`verify-storage-live.mjs`、`verify-attachments-live.mjs`、`verify-images-live.mjs`、`verify-handoff-live.mjs`、`verify-skills-live.mjs` | 接触实际 Codex、文件或会话，会生成测试记录，可能使用账号额度；不能当作普通静态检查批量执行 |
 | `*-ui-fixture.mjs` / `build-upload-ui-fixture.ps1` | 独立本机界面测试，测试账号、替身 worker、测试 APK；不用来部署正式服务 |
 | `verify-android-provider.ps1` | 在指定安卓设备安装、运行并卸载独立测试包，验证文件提供器兼容 |
 | `download-tunnel.ps1` / `quick-tunnel.mjs` | Cloudflare 临时隧道试验，非默认外网方案 |

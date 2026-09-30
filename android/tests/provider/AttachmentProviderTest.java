@@ -32,6 +32,14 @@ public final class AttachmentProviderTest extends Instrumentation {
                 }
                 check(cache.list().length==0,scenario+": stage removed after close");
             }
+            for(String extension:new String[]{"jpg","png","webp"}){
+                Intent imagePicker=AttachmentSource.picker(false,true);check("image/*".equals(imagePicker.getType()),"Image picker accepts gallery files");
+                try(AttachmentSource.Staged staged=AttachmentSource.read(context.getContentResolver(),Uri.parse("content://com.codexlink.attachmenttest.files/image-"+extension),cache)){
+                    check(staged.name.equals("0920-爱我中华，同心筑梦."+extension),"Image without filename suffix: "+extension);
+                    check(Arrays.equals(hash(new FileInputStream(staged.file)),hash(context.getAssets().open("vision-fixture."+extension))),"Image bytes preserved: "+extension);
+                }
+                check(cache.list().length==0,"Image staging cleaned");
+            }
             for(String scenario:new String[]{"denied","missing-file","read-error","invalid","empty","large-declared"}){
                 try(AttachmentSource.Staged ignored=AttachmentSource.read(context.getContentResolver(),Uri.parse("content://com.codexlink.attachmenttest.files/"+scenario),cache)){throw new AssertionError("Must reject "+scenario);}
                 catch(ApiClient.Failure error){
@@ -47,7 +55,7 @@ public final class AttachmentProviderTest extends Instrumentation {
             File badCache=new File(context.getCacheDir(),"not-a-directory");try(FileOutputStream out=new FileOutputStream(badCache)){out.write(1);}
             try(AttachmentSource.Staged ignored=AttachmentSource.read(context.getContentResolver(),Uri.parse("content://com.codexlink.attachmenttest.files/normal"),badCache)){throw new AssertionError("Bad cache accepted");}
             catch(AttachmentSource.ReadFailure error){check(error.detail.contains("A05"),"Cache failure is distinct");}
-            result.putString("result","PASS: 17 native ContentResolver cases plus both picker intents; file slices/pipes, separate grant/open/read/cache failures, private diagnostics, Office detection, byte equality and cleanup.");
+            result.putString("result","PASS: 20 native ContentResolver cases plus document/image picker intents; file slices/pipes, separate grant/open/read/cache failures, private diagnostics, Office detection, byte equality and cleanup.");
             finish(Activity.RESULT_OK,result);
         }catch(Throwable error){result.putString("result","FAIL: "+error);finish(Activity.RESULT_CANCELED,result);}
     }

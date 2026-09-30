@@ -8,6 +8,13 @@ import { acquireLock } from './runtime-lock.mjs';
 import { ProjectStorage } from './project-storage.mjs';
 import { listSkills, skillDefinition, skillInput } from './skills.mjs';
 
+// Expose only recognized resume failures; keep raw Codex diagnostics private.
+function resumeFailure(error) {
+  if (/^session [a-zA-Z0-9_-]+ is archived(?:\.|$)/i.test(error.message)) return Object.assign(new Error('此任务已在电脑 Codex 中归档。请先取消归档，再刷新状态并手动发送；也可以新建任务。'), { statusCode: 409 });
+  if (/active writer/i.test(error.message)) return Object.assign(new Error('电脑仍占用此任务（另一个 Codex 实例）。请先在电脑端释放会话；如需退出 Codex，请等电脑任务完成后再退出。然后回手机手动重试。'), { statusCode: 409 });
+  return error;
+}
+
 export class Workbench extends EventEmitter {
   constructor({ root = path.resolve('.runtime'), client = new CodexSessions() } = {}) {
     super();
@@ -16,6 +23,9 @@ export class Workbench extends EventEmitter {
     this.client = client;
     this.tasks = new Map();
     this.loaded = new Set();
+    this.inflightSends = new Set();
+    this.idleReleases = new Map();
+    this.desktopAttention = new Set();
     this.transitions = new Set();
     this.uploads = new Map();
     this.questions = new Map();
@@ -25,6 +35,7 @@ export class Workbench extends EventEmitter {
     client.on('message', message => this.onMessage(message));
     client.on('threadDisconnected', ({ threadId, error }) => {
       this.loaded.delete(threadId);
+      this.desktopAttention.delete(threadId);
       const task = this.tasks.get(threadId);
       if (task?.busy) { task.status = 'unknown'; task.error = '任务连接断开，请刷新执行结果'; }
       for (const [key, question] of this.questions) if (question.taskId === threadId) this.questions.delete(key);
@@ -115,6 +126,11 @@ export class Workbench extends EventEmitter {
       task.busy = false;
       task.error = params.turn.error?.message || null;
       for (const [key, question] of this.questions) if (question.taskId === task.id) this.questions.delete(key);
+      this.desktopAttention.delete(task.id);
+    }
+    if (message.method === 'desktop/attention') {
+      if (params.waiting) { this.desktopAttention.add(task.id); task.status = 'waiting'; }
+      else this.desktopAttention.delete(task.id);
     }
     if (message.method === 'serverRequest/resolved') this.questions.delete(String(params.requestId));
     if (message.method === 'error') task.error = params.error?.message || params.message || 'Codex 执行错误';
@@ -122,6 +138,20 @@ export class Workbench extends EventEmitter {
       void this.persist().catch(error => this.emitEvent('notice', { taskId: task.id, message: `保存状态失败：${error.message}` }));
     }
     this.emitEvent('codex', { taskId: task.id, method: message.method, params });
+    if (message.method === 'turn/completed') void this.releaseIdle(task);
+  }
+
+  releaseIdle(task) {
+    if (!this.client.autoReleaseIdle || this.client.isDesktopThread?.(task.id) || task.busy || this.inflightSends.has(task.id) || !this.loaded.has(task.id)) return this.idleReleases.get(task.id);
+    this.loaded.delete(task.id);
+    const operation = this.client.releaseThread(task.id).catch(error => {
+      task.busy = true; task.status = 'unknown'; task.error = '会话释放尚未确认，请刷新状态';
+      this.emitEvent('notice', { taskId: task.id, message: task.error });
+      void this.persist().catch(() => {});
+      throw Object.assign(new Error(task.error), { code: 'RPC_TIMEOUT', statusCode: 503 });
+    }).finally(() => this.idleReleases.delete(task.id));
+    void operation.catch(() => {});
+    this.idleReleases.set(task.id, operation); return operation;
   }
 
   task(id) {
@@ -152,6 +182,7 @@ export class Workbench extends EventEmitter {
     }
     authorize(); this.transitions.add(id);
     try {
+      await this.idleReleases.get(id);
       if (target === 'desktop') {
         if (task.controlTarget !== 'desktop') {
           let thread;
@@ -169,10 +200,7 @@ export class Workbench extends EventEmitter {
         authorize();
         try { await this.client.request('thread/resume', { threadId: id, cwd: task.cwd,
           sandbox: 'workspace-write', approvalPolicy: 'never', runtimeWorkspaceRoots: [task.cwd] }); }
-        catch (error) {
-          if (/active writer/i.test(error.message)) throw Object.assign(new Error('电脑仍占用此任务，请在电脑端关闭该会话（必要时退出 Codex）后重试'), { statusCode: 409 });
-          throw error;
-        }
+        catch (error) { throw resumeFailure(error); }
         this.loaded.add(id);
         try { authorize(); task.controlTarget = 'mobile'; await this.persist(); }
         catch (error) { task.controlTarget = 'desktop'; await this.client.releaseThread(id); this.loaded.delete(id); throw error; }
@@ -224,25 +252,29 @@ export class Workbench extends EventEmitter {
 
   skills(cwd) { return listSkills(this.client, cwd); }
 
-  async send(id, prompt, { authorize = () => {}, skillId } = {}) {
+  async send(id, prompt, { authorize = () => {}, skillId, images = [] } = {}) {
     const task = this.task(id);
     this.assertMobile(id);
     skillDefinition(skillId);
     if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 12_000) throw new Error('需求应为 1–12000 个字符');
-    if (task.busy) throw Object.assign(new Error('任务正在执行或结果待核实，请先刷新状态'), { statusCode: 409 });
+    if (task.busy || this.inflightSends.has(id)) throw Object.assign(new Error('任务正在执行或结果待核实，请先刷新状态'), { statusCode: 409 });
     authorize();
+    this.inflightSends.add(id);
     task.busy = true;
     task.status = 'starting';
     task.error = null;
     try {
+      await this.idleReleases.get(id);
       await this.persist();
       authorize();
       if (!this.loaded.has(id)) {
-        await this.client.request('thread/resume', { threadId: id, cwd: task.cwd,
-          sandbox: 'workspace-write', approvalPolicy: 'never', runtimeWorkspaceRoots: [task.cwd] });
+        try { await this.client.request('thread/resume', { threadId: id, cwd: task.cwd,
+          sandbox: 'workspace-write', approvalPolicy: 'never', runtimeWorkspaceRoots: [task.cwd] }); }
+        catch (error) { throw resumeFailure(error); }
         this.loaded.add(id);
       }
       const input = await skillInput(this.client, task.cwd, skillId, prompt);
+      input.push(...images);
       authorize();
       const result = await this.client.request('turn/start', {
         threadId: id, input, cwd: task.cwd,
@@ -256,11 +288,17 @@ export class Workbench extends EventEmitter {
       await this.persist();
       return { turnId: result.turn.id, task };
     } catch (error) {
-      task.status = error.code === 'RPC_TIMEOUT' || !this.connected || task.status === 'unknown' ? 'unknown' : 'failed';
-      task.busy = task.status === 'unknown';
-      task.error = error.message;
+      if (error.code === 'DESKTOP_BUSY') {
+        task.status = this.desktopAttention.has(id) ? 'waiting' : 'running'; task.busy = true; task.activeTurn = error.turnId; task.error = null;
+      } else {
+        task.status = error.code === 'RPC_TIMEOUT' || !this.connected || task.status === 'unknown' ? 'unknown' : 'failed';
+        task.busy = task.status === 'unknown'; task.error = error.message;
+      }
       await this.persist();
       throw error;
+    } finally {
+      this.inflightSends.delete(id);
+      if (['completed', 'interrupted', 'failed'].includes(task.status)) await this.releaseIdle(task);
     }
   }
 
@@ -268,12 +306,13 @@ export class Workbench extends EventEmitter {
     const task = this.task(id);
     const thread = await this.readThread(id);
     const last = thread.turns?.at(-1);
-    if (!this.transitions.has(id) && task.status !== 'starting' && thread.status?.type !== 'active' && last &&
+    if (!this.transitions.has(id) && !thread.pendingSubmission && task.status !== 'starting' && thread.status?.type !== 'active' && last &&
         (!task.activeTurn || last.id === task.activeTurn) &&
         ['completed', 'interrupted', 'failed'].includes(last.status)) {
       task.busy = false; task.activeTurn = null; task.status = last.status;
       task.error = last.error?.message || null;
       await this.persist();
+      await this.releaseIdle(task);
     }
     return { task, thread };
   }
@@ -305,6 +344,7 @@ export class Workbench extends EventEmitter {
   files(id) { return listFiles(this.task(id).cwd); }
   file(id, name) { return readArtifact(this.task(id).cwd, name); }
   async close() {
+    await Promise.allSettled(this.idleReleases.values());
     await this.client.close();
     await this.writeQueue;
     await this.releaseLock?.();

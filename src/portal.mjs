@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { failure, name, level, publicUser } from './access-store.mjs';
 import { listFiles, readArtifact } from './files.mjs';
-import { saveAttachment, attachmentPrompt } from './attachments.mjs';
+import { saveAttachment, attachmentInput } from './attachments.mjs';
 import { skillDefinition } from './skills.mjs';
 
 export const execution = Object.freeze({ enabled: true, mode: 'account-permissions',
@@ -23,6 +23,7 @@ export class Portal {
       status: live?.status || (binding.threadId ? 'idle' : 'pending'), busy: Boolean(live?.busy),
       activeTurn: live?.activeTurn ?? null, createdAt: binding.createdAt, connectedToCodex: Boolean(binding.threadId),
       control: this.workbench.controlState(binding.threadId),
+      desktopAttention: this.workbench.desktopAttention?.has(binding.threadId) || false,
       canExecute: project.ownerId === id && project.source === 'mobile' };
   }
   tasks(id, source) {
@@ -175,7 +176,7 @@ export class Portal {
     let { binding, project } = this.executable(id, taskId); authorize();
     skillDefinition(input.skillId);
     this.workbench.assertMobile(binding.threadId || binding.id);
-    const prompt = await attachmentPrompt(project.cwd, input.prompt, input.attachments);
+    const { prompt, images } = await attachmentInput(project.cwd, input.prompt, input.attachments);
     if (!prompt.trim()) throw failure('请填写需求或添加附件');
     if (!binding.threadId) {
       // Upgrade an existing pending task in place. Serialize so concurrent sends cannot create two threads.
@@ -190,7 +191,7 @@ export class Portal {
     }
     const check = () => { authorize(); this.executable(id, taskId); };
     check();
-    const result = await this.workbench.send(binding.threadId, prompt, { authorize: check, skillId: input.skillId });
+    const result = await this.workbench.send(binding.threadId, prompt, { authorize: check, skillId: input.skillId, images });
     const current = this.executable(id, taskId);
     return { turnId: result.turnId, task: this.taskView(current.binding, current.project, id) };
   }

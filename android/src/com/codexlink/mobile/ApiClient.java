@@ -25,11 +25,15 @@ public final class ApiClient {
     }
     private final String origin;
     private final Cookies cookies;
+    private final int readTimeout;
     public ApiClient(String origin, Cookies cookies) {
+        this(origin,cookies,45000);
+    }
+    ApiClient(String origin, Cookies cookies, int readTimeout) {
         URI uri = URI.create(origin);
         boolean loopback = "http".equals(uri.getScheme()) && "127.0.0.1".equals(uri.getHost());
         if ((!"https".equals(uri.getScheme()) && !loopback) || uri.getHost() == null || uri.getRawUserInfo() != null || uri.getRawQuery() != null || uri.getRawFragment() != null || !"".equals(uri.getRawPath())) throw new IllegalArgumentException("Invalid origin");
-        this.origin = origin; this.cookies = cookies;
+        this.origin = origin; this.cookies = cookies; this.readTimeout=readTimeout;
     }
     public String json(String path, String payload) throws IOException {
         byte[] bytes = payload == null ? null : payload.getBytes(StandardCharsets.UTF_8);
@@ -83,7 +87,7 @@ public final class ApiClient {
         HttpURLConnection connection = (HttpURLConnection) target.toURL().openConnection();
         try {
             connection.setInstanceFollowRedirects(false);
-            connection.setConnectTimeout(12000); connection.setReadTimeout(binary || "application/octet-stream".equals(contentType) ? 120000 : 45000);
+            connection.setConnectTimeout(12000); connection.setReadTimeout(binary || "application/octet-stream".equals(contentType) ? 120000 : readTimeout);
             connection.setUseCaches(false);
             connection.setRequestProperty("Accept", apk ? "application/vnd.android.package-archive" : binary ? "application/octet-stream" : "application/json");
             connection.setRequestProperty("Origin", origin);

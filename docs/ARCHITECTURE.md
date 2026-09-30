@@ -12,7 +12,7 @@ codexlink/
 ├─ public/                   网页工作台和 APK 安装页
 ├─ android/                  安卓源码、资源、构建与 JVM 检查
 ├─ scripts/                  配置、启动、探测和联调工具
-├─ test/                     Node.js 测试与合成 Office 样例
+├─ test/                     Node.js 测试与合成 Office / 图片样例
 └─ docs/                     使用、部署和开发说明
 ```
 
@@ -28,11 +28,14 @@ codexlink/
 | `src/portal.mjs` | 面向客户端的业务层，统一项目和任务权限校验 |
 | `src/workbench.mjs` | Codex 任务状态、提交、停止、追问、交接、文件操作 |
 | `src/codex-client.mjs` | 启动本工具拥有的 Codex 子进程，处理请求响应与事件 |
-| `src/codex-sessions.mjs` | 按任务管理子进程；只读元数据连接与可写任务连接分开 |
+| `src/codex-sessions.mjs` | 按任务管理子进程；只读元数据连接与可写任务连接分开；明确的占用冲突才尝试桌面连接 |
+| `src/desktop-client.mjs` | 跟随桌面任务状态、转发发送/停止；沿用桌面设置，不拥有桌面进程 |
+| `src/desktop-ipc.mjs` / `scripts/desktop-pipe.ps1` | Windows 本机 IPC、官方签名与同用户校验、状态修订及断线处理 |
 | `src/skills.mjs` | 五类固定技能标识与安装目录校验，构造原生技能输入 |
 | `src/project-storage.mjs` | 项目根目录、按日期创建目录、旧路径兼容 |
 | `src/files.mjs` | 文件枚举、读取与项目目录边界 |
 | `src/attachments.mjs` / `file-limits.mjs` | Office 附件结构校验、保存、引用和大小限制 |
+| `src/image-attachments.mjs` | 图片类型、结构、尺寸和静态格式校验 |
 | `src/network.mjs` | 本机、局域网和独立转发入口的来源判断 |
 | `src/quick-tunnel.mjs` | 可选 Cloudflare 临时隧道进程管理 |
 | `src/desktop-import.mjs` | 可信本机操作者登记已有电脑任务 |
@@ -40,7 +43,7 @@ codexlink/
 | `src/releases.mjs` | 公开 APK 文件名和路由边界 |
 | `src/isolation.mjs` | 实验性独立执行环境诊断，不是当前账号隔离保证 |
 
-后台只使用 Node.js 内置模块，没有数据库服务依赖。JSON 文件是登记数据，原生 Codex 历史由 Codex 管理。任务的读写占用可能跨工作台和官方桌面应用发生冲突，不能仅靠切换 App 页面解除。
+后台只使用 Node.js 内置模块，没有数据库服务依赖。JSON 文件是登记数据，原生 Codex 历史由 Codex 管理。桌面共用会话基于内部 IPC 协议，校验同一 Windows 用户和登录会话中的官方签名进程；协议不匹配时明确失败，不能仅靠切换 App 页面解除占用。
 
 ## 安卓与网页
 
@@ -49,7 +52,8 @@ codexlink/
 | `MainActivity.java` | 登录、项目卡片、任务对话、技能、账号设置 |
 | `ApiClient.java` / `AppCookies.java` | HTTP 请求、会话、文件传输与固定服务来源 |
 | `AttachmentUploads.java` | 当前账号下按任务保存的文字、附件和技能草稿 |
-| `AttachmentSource.java` / `OfficeAttachment.java` | 安卓文件选择、来源兼容和实际 Office 格式识别 |
+| `AttachmentSource.java` / `AttachmentFile.java` / `OfficeAttachment.java` | 安卓文件选择、来源兼容和实际图片 / Office 格式识别 |
+| `ConversationSync.java` / `ConversationMemory.java` | 按账号和任务维护对话缓存、读请求序号、同步退避与旧结果丢弃 |
 | `ChatUi.java` / `Screen.java` | 原生界面组件和布局 |
 | `MessageBody.java` / `MessageFormat.java` | 对话内容、代码块、复制和技能名称呈现 |
 | `VerificationActivity.java` | DDNSTO 所需连接验证页面 |
@@ -65,10 +69,10 @@ Java 文件位于 `android/src/com/codexlink/mobile/`。App 使用原生界面�
 
 1. 手机带登录 Cookie，向任务发送需求、可选附件名和固定 `skillId`。
 2. HTTP 层检查入口与会话；Portal 检查项目归属、执行权限及附件引用。
-3. Workbench 锁定该任务，必要时恢复自己的原生 Codex 任务。
+3. Workbench 锁定该任务，必要时恢复自己的原生 Codex 任务。仅恢复明确返回正在被其他写入方占用时，关闭本次失败的子进程并尝试跟随原桌面会话；校验任务 ID 和实际目录。
 4. 如选了技能，读取当前项目的已安装技能并复核启用状态；手机不能指定任意主机路径。
-5. 向 Codex `turn/start` 发送文字和技能输入，随后按事件更新执行状态。
-6. 手机刷新对话和状态；文件通过工作台权限检查后下载。
+5. 向 Codex `turn/start` 发送文字、技能及原生图片输入；桌面会话走对应的原会话转发协议，并补全桌面需要的文本标注数组。随后按事件更新状态，结果未知时不切换通道重发。
+6. 手机刷新对话和状态；文件通过工作台权限检查后下载。自己的子进程在执行结束且发送应答完成后释放空闲会话；桌面客户端断开跟随连接时不终止桌面进程。归档错误返回明确提示，不自动恢复或重发。
 
 协议背景见 [官方 Codex App Server 文档](https://learn.chatgpt.com/docs/app-server)。本项目以本机验证过的 CLI 行为为准，不承诺兼容任意历史或未来版本。
 
@@ -86,7 +90,7 @@ Java 文件位于 `android/src/com/codexlink/mobile/`。App 使用原生界面�
 | `.runtime/android-signing/` | 本地 APK 签名材料 |
 | `.runtime/workspaces/` 或配置的外部目录 | 项目文件 |
 
-配置由相应脚本生成，不提供带个人数据的配置文件。`CODEX_LINK_RUNTIME` 可供高级部署选择运行目录；普通启动按本仓库 `.runtime/` 使用，后台启动脚本使用标准目录和 4317 端口。
+配置由相应脚本生成，不提供带个人数据的配置文件。`CODEX_LINK_RUNTIME` 可供高级部署选择运行目录；隐藏后台脚本默认使用本仓库 `.runtime/` 和 4317 端口，可通过 `-RuntimeDirectory` / `-Port` 覆盖。该脚本在同一 Windows 身份下创建独立宿主，原子记录启动结果，不安装系统服务或开机自启。
 
 ## 密码管理接口
 

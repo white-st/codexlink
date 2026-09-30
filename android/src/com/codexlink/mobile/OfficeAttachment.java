@@ -28,7 +28,7 @@ final class OfficeAttachment {
         return normalizeName(displayName,extension);
     }
     private static ApiClient.Failure invalid(){return failure(415,"所选文件不是完整的 Word / PPT 文档，请重新选择 .docx 或 .pptx 原文件");}
-    private static String normalizeName(String displayName,String extension){
+    static String normalizeName(String displayName,String extension){
         StringBuilder clean=new StringBuilder();
         if(displayName!=null)for(int i=0;i<displayName.length();){
             int cp=displayName.codePointAt(i);i+=Character.charCount(cp);
@@ -39,11 +39,11 @@ final class OfficeAttachment {
         }
         String name=clean.toString().trim();
         String lower=name.toLowerCase(Locale.ROOT);
-        for(String suffix:new String[]{".docx",".pptx",".doc",".ppt"})if(lower.endsWith(suffix)){name=name.substring(0,name.length()-suffix.length()).trim();break;}
+        for(String suffix:new String[]{".docx",".pptx",".doc",".ppt",".jpeg",".jpg",".png",".webp"})if(lower.endsWith(suffix)){name=name.substring(0,name.length()-suffix.length()).trim();break;}
         // The existing server rejects consecutive dots and Windows reserved basenames.
         while(name.contains(".."))name=name.replace("..","_");
         while(name.endsWith(".")||name.endsWith(" "))name=name.substring(0,name.length()-1);
-        if(name.isEmpty())name=extension.equals(".pptx")?"演示文稿":"Word文档";
+        if(name.isEmpty())name=extension.equals(".pptx")?"演示文稿":extension.equals(".docx")?"Word文档":"图片";
         if(name.matches("(?i)^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\\..*)?$"))name="附件_"+name;
         int max=120-extension.length();
         if(name.length()>max){int end=max;if(Character.isHighSurrogate(name.charAt(end-1)))end--;name=name.substring(0,end);}

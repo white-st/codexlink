@@ -12,7 +12,7 @@
 | JDK 17 | 仅构建 Android 时需要 | [Adoptium JDK 17](https://adoptium.net/temurin/releases/?version=17) |
 | Android SDK / Android Studio | 构建工具、平台 android.jar；模拟器按需安装 | [Android 下载入口](https://developer.android.com/studio)、[命令行工具说明](https://developer.android.com/tools) |
 
-本项目启动的是自己的 Codex 子进程，不依靠模拟点击官方桌面界面。桌面 App 的任务占用仍可能影响同一会话，详见常见问题。项目通过现有 Codex 登录执行任务，没有另外实现 API Key 登录页；可用额度与账号状态由本机 Codex 决定。
+本项目默认启动自己的 Codex 子进程，不依靠模拟点击官方桌面界面。手机任务已被兼容的 Windows Codex 桌面占用时，会通过本机 IPC 把需求交给原会话。此能力需要后台和桌面使用同一 Windows 用户、同一登录会话及受支持协议，不保证所有桌面版本可用。项目通过现有 Codex 登录执行任务，没有另外实现 API Key 登录页；可用额度与账号状态由本机 Codex 决定。
 
 检查安装：
 
@@ -48,7 +48,11 @@ npm start
 npm run start:background
 ```
 
-日志位于 `.runtime/service-日期时间.stdout.log` / `.stderr.log`。停止工作台：
+隐藏后台通过 Windows WMI 创建独立宿主，保持原 Windows 用户身份，等待端口和服务就绪后返回。关闭启动它的终端或桌面应用不会因此结束后台；它不是 Windows 服务，也没有安装开机自启。电脑重启后需重新启动。
+
+脚本沿用 `CODEX_BIN`，未设置时从 PATH 查找 `codex.exe`。默认运行目录为 `.runtime`、端口为 4317，高级部署可传 `-RuntimeDirectory` 和 `-Port`。若使用自定义运行目录，停止和配置脚本也应设置相同的 `CODEX_LINK_RUNTIME`，避免操作另一份数据。
+
+日志位于 `.runtime/service-日期时间-编号.stdout.log` / `.stderr.log`；`launch-编号.json` 记录此次启动结果。停止工作台：
 
 ```powershell
 npm stop

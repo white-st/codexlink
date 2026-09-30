@@ -6,6 +6,8 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.net.ConnectivityManager;
+import android.net.Network;
 import android.os.*;
 import android.text.InputFilter;
 import android.text.InputType;
@@ -26,6 +28,11 @@ public final class MainActivity extends Activity {
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final ExecutorService uploadWorker = Executors.newSingleThreadExecutor();
+    private final ExecutorService syncWorker = Executors.newSingleThreadExecutor();
+    private final ConversationSync sync = new ConversationSync();
+    private final ConversationMemory conversations = new ConversationMemory();
+    private ConnectivityManager connectivity;
+    private ConnectivityManager.NetworkCallback networkCallback;
     private final AttachmentUploads<JSONObject> uploads = new AttachmentUploads<>();
     private final Set<String> uncertain = new HashSet<>();
     private AppCookies cookies;
@@ -41,17 +48,19 @@ public final class MainActivity extends Activity {
     private TextView profileName, profileLevel, profileConnection;
     private EditText composer;
     private Button send, stop, skillPicker;
+    private Button latestReply;
+    private boolean followTail=true, restoringScroll;
+    private int historyRender;
     private LinearLayout listBody;
     private ScrollView listScroll;
     private ProgressBar progress;
     private String searchQuery = "", listContext = "", accountHint = "";
-    private boolean quietRequest;
     private boolean showingProfile;
     private boolean loading, foreground, destroyed, returningFromVerification;
     private int epoch, openDialogs;
     private String exportTask, exportName, exportUser;
     private String importTask, importUser, attachmentTask = "";
-    private boolean alternateAttachmentPicker;
+    private boolean alternateAttachmentPicker, imageAttachmentPicker;
     private List<JSONObject> attachments = new ArrayList<>();
     private LinearLayout attachmentRows;
     private ImageButton attach;
@@ -59,7 +68,7 @@ public final class MainActivity extends Activity {
         if (!foreground || destroyed) return;
         updates.tick();
         if (user != null && !loading && exportTask == null && importTask == null && openDialogs == 0) refresh(false, true);
-        main.postDelayed(this, 4500);
+        main.postDelayed(this, 1000);
     }};
 
     @Override public void onCreate(Bundle state) {
@@ -69,20 +78,28 @@ public final class MainActivity extends Activity {
         updates = new UpdateChecker(this,api,this::canPromptUpdates,this::showDialog,this::toast);
         root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setBackgroundColor(BG);
         setContentView(root); Screen.insets(this, root);
+        connectivity=(ConnectivityManager)getSystemService(CONNECTIVITY_SERVICE);
+        networkCallback=new ConnectivityManager.NetworkCallback(){
+            @Override public void onAvailable(Network network){main.post(()->{if(!destroyed){sync.disconnected();showConnection();wakeSync();}});}
+            @Override public void onLost(Network network){main.post(()->{if(!destroyed){sync.disconnected();showConnection();wakeSync();}});}
+        };
+        connectivity.registerDefaultNetworkCallback(networkCallback);
         if (Build.VERSION.SDK_INT >= 33) getOnBackInvokedDispatcher().registerOnBackInvokedCallback(0, this::goBack);
         showLogin(); checkAuth();
     }
     @Override protected void onResume() {
-        super.onResume(); foreground = true; main.removeCallbacks(poll); main.postDelayed(poll, 4500);
+        super.onResume(); foreground = true; wakeSync();
         if (returningFromVerification && !loading) { returningFromVerification = false; checkAuth(); }
     }
-    @Override protected void onPause() { foreground = false; main.removeCallbacks(poll); super.onPause(); }
+    @Override protected void onPause() { saveDraft();foreground = false; main.removeCallbacks(poll); super.onPause(); }
     @Override public void onConfigurationChanged(android.content.res.Configuration configuration){super.onConfigurationChanged(configuration);if(composer!=null)composer.setMaxLines(configuration.orientation==android.content.res.Configuration.ORIENTATION_LANDSCAPE?2:5);if(listBody!=null)renderRows();}
-    @Override protected void onDestroy() { destroyed = true; epoch++; uploads.account("");main.removeCallbacksAndMessages(null); updates.close(); worker.shutdownNow();uploadWorker.shutdownNow(); super.onDestroy(); }
+    @Override protected void onDestroy() { destroyed = true; epoch++; uploads.account("");conversations.account("");sync.reset();connectivity.unregisterNetworkCallback(networkCallback);main.removeCallbacksAndMessages(null); updates.close(); worker.shutdownNow();uploadWorker.shutdownNow();syncWorker.shutdownNow(); super.onDestroy(); }
+    private void wakeSync(){sync.requestNow();if(foreground&&!destroyed){main.removeCallbacks(poll);main.post(poll);}}
+    private void showConnection(){if(user!=null){hint(connectionText());updateControls();updateProfile();}}
     private boolean canPromptUpdates(){return foreground&&!destroyed&&!loading&&uploads.active()==null&&!uploads.hasDrafts()&&openDialogs==0&&importTask==null&&exportTask==null&&!hasDraft()&&(loginName==null||loginName.length()==0)&&(loginPassword==null||loginPassword.length()==0);}
     @Override public void onBackPressed() { goBack(); }
     private void goBack() {
-        if (loading&&!quietRequest) { toast("操作处理中，请稍候"); return; }
+        if (loading) { toast("操作处理中，请稍候"); return; }
         if(showingProfile){switchPage("projects");return;}
         if (!taskId.isEmpty()) {
             leaveTask();
@@ -90,9 +107,10 @@ public final class MainActivity extends Activity {
         else moveTaskToBack(true);
     }
     private boolean hasDraft(){return composer!=null&&!composer.getText().toString().trim().isEmpty()||!attachments.isEmpty();}
-    private void saveDraft(){if(user!=null&&composer!=null&&!attachmentTask.isEmpty())uploads.draft(attachmentTask).text=composer.getText().toString();}
+    private void saveDraft(){if(user!=null&&composer!=null&&!attachmentTask.isEmpty())uploads.draft(attachmentTask).text=composer.getText().toString();savePosition();}
+    private void savePosition(){if(user!=null&&messageScroll!=null&&messageList!=null&&taskId.equals(messageList.getTag())&&!restoringScroll)conversations.position(taskId,messageScroll.getScrollY(),followTail);}
     private void clearAttachments(){attachments=new ArrayList<>();attachmentTask="";importTask=null;importUser=null;}
-    private void leaveTask() { saveDraft();epoch++; taskId = ""; composer = null; searchQuery = "";clearAttachments(); renderLists(); }
+    private void leaveTask() { saveDraft();epoch++; taskId = ""; composer = null; searchQuery = "";clearAttachments(); renderLists();wakeSync(); }
     private int dp(int value) { return (int)(getResources().getDisplayMetrics().density * value + .5f); }
     private LinearLayout column() { LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); return box; }
     private LinearLayout row() { LinearLayout box = new LinearLayout(this); box.setGravity(Gravity.CENTER_VERTICAL); return box; }
@@ -106,7 +124,7 @@ public final class MainActivity extends Activity {
         view.setOnClickListener(v -> { if (!loading) action.run(); else toast("操作处理中，请稍候"); }); return view;
     }
     private Button primary(String title,Runnable action) { Button view=button(title,action);ui.button(view,true);return view; }
-    private ImageButton iconAction(String kind,String title,Runnable action){return ui.iconButton(kind,title,()->{if(!loading||kind.equals("back")&&quietRequest)action.run();else toast("正在更新，请稍候");});}
+    private ImageButton iconAction(String kind,String title,Runnable action){return ui.iconButton(kind,title,()->{if(!loading)action.run();else toast("正在更新，请稍候");});}
     private void space(LinearLayout box,int height){View view=new View(this);box.addView(view,new LinearLayout.LayoutParams(1,dp(height)));}
     private TextView caption(String value){TextView view=text(value,12,MUTED);view.setLetterSpacing(.04f);return view;}
     private EditText field(String hint, boolean secret, int max) {
@@ -124,6 +142,7 @@ public final class MainActivity extends Activity {
         profileName=null;profileLevel=null;profileConnection=null;
         loginName=null;loginPassword=null;
         attachmentRows=null;attach=null;skillPicker=null;
+        messageScroll=null;messageList=null;latestReply=null;historyRender++;restoringScroll=false;
         LinearLayout header = row(); header.setPadding(dp(8), dp(compact?0:8), dp(8), dp(compact?0:8));header.setBackgroundColor(Color.WHITE);
         if(compact)header.setMinimumHeight(dp(48));
         if (back) header.addView(iconAction("back","返回",this::goBack),new LinearLayout.LayoutParams(dp(48),dp(48)));
@@ -136,7 +155,7 @@ public final class MainActivity extends Activity {
         if(!showingProfile){ImageButton more=iconAction("more","更多操作",()->{});more.setOnClickListener(v->showMenu(more));header.addView(more,new LinearLayout.LayoutParams(dp(48),dp(48)));}root.addView(header);
         progress=new ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal);progress.setIndeterminate(true);progress.setIndeterminateTintList(android.content.res.ColorStateList.valueOf(GREEN));progress.setVisibility(View.INVISIBLE);root.addView(progress,new LinearLayout.LayoutParams(-1,dp(2)));
         notice = text("", 13, MUTED); notice.setPadding(dp(18), dp(8), dp(18), dp(8));notice.setBackgroundColor(0xfffff2d7);notice.setVisibility(View.GONE); root.addView(notice);
-        uploadNotice=text("",13,GREEN);uploadNotice.setPadding(dp(18),dp(9),dp(18),dp(9));uploadNotice.setBackground(ui.touch(ChatUi.SOFT,0));uploadNotice.setOnClickListener(v->{if(loading&&!quietRequest)return;AttachmentUploads.Job<JSONObject> job=uploads.notice();if(job!=null&&openUploadTask(job)&&job.complete&&job.error!=null)showUploadFailure(job);});root.addView(uploadNotice);renderUploadNotice();
+        uploadNotice=text("",13,GREEN);uploadNotice.setPadding(dp(18),dp(9),dp(18),dp(9));uploadNotice.setBackground(ui.touch(ChatUi.SOFT,0));uploadNotice.setOnClickListener(v->{if(loading)return;AttachmentUploads.Job<JSONObject> job=uploads.notice();if(job!=null&&openUploadTask(job)&&job.complete&&job.error!=null)showUploadFailure(job);});root.addView(uploadNotice);renderUploadNotice();
         page = column(); root.addView(page, new LinearLayout.LayoutParams(-1, 0, 1));
     }
     private void showMenu(View anchor){
@@ -173,6 +192,7 @@ public final class MainActivity extends Activity {
     }
     private void showLogin() {
         uploads.account("");
+        conversations.account("");sync.reset();
         clearAttachments();
         showingProfile=false;
         scaffold("CodexLink", "你的随身工作台", false);
@@ -223,6 +243,7 @@ public final class MainActivity extends Activity {
     }
     private void clearAccount() {
         uploads.account("");
+        conversations.account("");sync.reset();
         clearAttachments();
         epoch++; user = null; snapshot = new JSONObject(); projectId = ""; taskId = "";searchQuery=""; uncertain.clear(); exportTask = null; exportName = null; exportUser = null;
         showingProfile=false;
@@ -242,6 +263,7 @@ public final class MainActivity extends Activity {
         if(control.equals("desktop"))return "待恢复工作台操作 · 只读";
         if(control.equals("changing"))return "正在交接";
         if(control.equals("release-pending"))return "待恢复工作台操作";
+        if(item.optBoolean("desktopAttention"))return "请在电脑 Codex 中确认或回答";
         String value = item.optString("status");
         if ("unknown".equals(value)) return "结果待核实";
         if ("waiting-input".equals(value) || "waiting".equals(value)) return "等待你的回答";
@@ -254,6 +276,7 @@ public final class MainActivity extends Activity {
     private void renderLists() {
         if (user == null) { showLogin(); return; }
         uploads.account(user.optString("id"));
+        conversations.account(user.optString("id"));
         if(showingProfile){renderProfile();return;}
         JSONObject selected = project();
         if (!projectId.isEmpty() && selected == null) { projectId = ""; taskId = ""; }
@@ -271,7 +294,7 @@ public final class MainActivity extends Activity {
     }
     private View navItem(String icon,String title,String target){
         boolean selected=showingProfile?target.equals("profile"):target.equals("projects");LinearLayout item=column();item.setGravity(Gravity.CENTER);item.setBackground(ui.touch(selected?ChatUi.SOFT:Color.WHITE,14));
-        ImageView image=new ImageView(this);image.setImageDrawable(new ChatUi.Glyph(icon,selected?GREEN:MUTED));item.addView(image,new LinearLayout.LayoutParams(dp(22),dp(22)));TextView label=text(title,12,selected?GREEN:MUTED);label.setGravity(Gravity.CENTER);label.setTypeface(null,selected?Typeface.BOLD:Typeface.NORMAL);item.addView(label);item.setContentDescription(title);item.setSelected(selected);item.setFocusable(true);item.setOnClickListener(v->{if((!loading||quietRequest)&&!selected)switchPage(target);});return item;
+        ImageView image=new ImageView(this);image.setImageDrawable(new ChatUi.Glyph(icon,selected?GREEN:MUTED));item.addView(image,new LinearLayout.LayoutParams(dp(22),dp(22)));TextView label=text(title,12,selected?GREEN:MUTED);label.setGravity(Gravity.CENTER);label.setTypeface(null,selected?Typeface.BOLD:Typeface.NORMAL);item.addView(label);item.setContentDescription(title);item.setSelected(selected);item.setFocusable(true);item.setOnClickListener(v->{if(!loading&&!selected)switchPage(target);});return item;
     }
     private List<JSONObject> sorted(JSONArray data){List<JSONObject> values=new ArrayList<>();for(int i=0;i<data.length();i++)if(data.optJSONObject(i)!=null)values.add(data.optJSONObject(i));values.sort((a,b)->b.optString("createdAt").compareTo(a.optString("createdAt")));return values;}
     private boolean matches(JSONObject item){String query=searchQuery.trim().toLowerCase(Locale.ROOT);return query.isEmpty()||(item.optString("name")+" "+item.optString("projectName")).toLowerCase(Locale.ROOT).contains(query);}
@@ -314,11 +337,11 @@ public final class MainActivity extends Activity {
         String state=isProject?privacy(item):status(item)+(item.optBoolean("canExecute")?"":" · 只读");
         int stateColor=!isProject&&item.optBoolean("busy")?GREEN:!isProject&&("unknown".equals(item.optString("status"))||"waiting-input".equals(item.optString("status"))||"waiting".equals(item.optString("status")))?0xff976018:!isProject&&"failed".equals(item.optString("status"))?0xffa44035:MUTED;
         TextView footer=text(state,11,stateColor);footer.setPadding(dp(8),dp(6),dp(8),dp(6));footer.setMinLines(2);footer.setMaxLines(2);footer.setEllipsize(TextUtils.TruncateAt.END);footer.setBackground(ui.surface(!isProject&&item.optBoolean("busy")?ChatUi.SOFT:BG,8));card.addView(footer);
-        card.setContentDescription(item.optString("name")+"，"+detail);card.setOnClickListener(v->{if(loading&&!quietRequest)return;saveDraft();epoch++;searchQuery="";projectId=isProject?item.optString("id"):item.optString("projectId");if(isProject)renderLists();else{taskId=item.optString("id");showChat();refresh(false);}});
+        card.setContentDescription(item.optString("name")+"，"+detail);card.setOnClickListener(v->{if(loading)return;saveDraft();epoch++;searchQuery="";projectId=isProject?item.optString("id"):item.optString("projectId");if(isProject)renderLists();else{taskId=item.optString("id");showChat();refresh(false);}});
         if(isProject&&item.optBoolean("owned")){card.setTooltipText("长按删除项目");card.setOnLongClickListener(v->{if(!loading)removeProjectDialog(item);else toast("正在更新，请稍候");return true;});}
         return card;
     }
-    private void switchPage(String value) { saveDraft();epoch++;clearAttachments(); showingProfile=value.equals("profile");projectId="";taskId="";searchQuery="";renderLists(); }
+    private void switchPage(String value) { saveDraft();epoch++;clearAttachments(); showingProfile=value.equals("profile");projectId="";taskId="";searchQuery="";renderLists();wakeSync(); }
     private void renderProfile(){
         if(user==null){showLogin();return;}
         scaffold("我的","",false,true);
@@ -342,7 +365,7 @@ public final class MainActivity extends Activity {
     private void updateProfile(){
         if(!showingProfile||user==null||profileName==null)return;
         profileName.setText(user.optString("username"));profileLevel.setText(("admin".equals(user.optString("role"))?"管理员":"普通用户")+" · 等级 "+user.optInt("level"));
-        profileConnection.setText(!snapshot.has("connected")?"正在读取连接状态…":snapshot.optBoolean("connected")&&snapshot.optBoolean("signedIn")?"已连接电脑":connectionText());
+        profileConnection.setText(!sync.connected()?connectionText():!snapshot.has("connected")?"正在读取连接状态…":snapshot.optBoolean("connected")&&snapshot.optBoolean("signedIn")?"已连接电脑":connectionText());
     }
     private void confirmLogout(){
         String message="退出后可以使用其他账号登录。";
@@ -406,23 +429,32 @@ public final class MainActivity extends Activity {
     private void showChat() {
         JSONObject selected=task(); if(selected==null){renderLists();return;}
         uploads.account(user.optString("id"));
+        conversations.account(user.optString("id"));
         if(!attachmentTask.equals(taskId)){clearAttachments();attachmentTask=taskId;}
         attachments=uploads.draft(taskId).files;
         scaffold(selected.optString("name"),selected.optString("projectName"),true);
         taskState=text(status(selected),12,MUTED);taskState.setGravity(Gravity.CENTER);taskState.setPadding(dp(16),dp(6),dp(16),dp(6)); page.addView(taskState);
         messageScroll=new ScrollView(this); messageScroll.setFillViewport(true);messageScroll.setClipToPadding(false);messageScroll.setPadding(dp(14),dp(10),dp(14),dp(14)); messageList=column(); messageScroll.addView(messageList); page.addView(messageScroll,new LinearLayout.LayoutParams(-1,0,1));
         questions=column(); messageList.addView(questions);
+        latestReply=button("查看最新回复 ↓",()->{followTail=true;latestReply.setVisibility(View.GONE);messageScroll.fullScroll(View.FOCUS_DOWN);savePosition();});latestReply.setVisibility(View.GONE);page.addView(latestReply,new LinearLayout.LayoutParams(-1,dp(36)));
+        messageScroll.setOnScrollChangeListener((View.OnScrollChangeListener)(v,x,y,oldX,oldY)->{if(restoringScroll||v!=messageScroll)return;followTail=messageList.getHeight()-messageScroll.getHeight()-y<dp(100);if(followTail)latestReply.setVisibility(View.GONE);savePosition();});
+        // User gestures supersede any pending restoration from an older layout pass.
+        messageScroll.setOnTouchListener((v,event)->{if(event.getActionMasked()==android.view.MotionEvent.ACTION_DOWN){historyRender++;restoringScroll=false;}return false;});
         if(selected.optBoolean("canExecute")) {
             LinearLayout dock=column();dock.setBackgroundColor(Color.WHITE);dock.setPadding(dp(12),dp(6),dp(12),dp(6));
             skillPicker=button("技能 · 不指定",this::chooseSkill);skillPicker.setTextSize(12);skillPicker.setMinHeight(0);skillPicker.setMinimumHeight(0);skillPicker.setPadding(dp(12),0,dp(12),0);dock.addView(skillPicker,new LinearLayout.LayoutParams(-2,dp(34)));
             attachmentRows=column();dock.addView(attachmentRows);LinearLayout input=row();input.setGravity(Gravity.BOTTOM);
-            attach=iconAction("attach","添加 Word 或 PPT 附件",this::chooseAttachment);input.addView(attach,new LinearLayout.LayoutParams(dp(44),dp(50)));
+            attach=iconAction("attach","添加图片、Word 或 PPT 附件",this::chooseAttachment);input.addView(attach,new LinearLayout.LayoutParams(dp(44),dp(50)));
             composer=field("发消息，描述你想做的事…",false,12000); composer.setSingleLine(false); composer.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE|InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);composer.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI); composer.setMinLines(1); composer.setMaxLines(5); composer.setGravity(Gravity.TOP);composer.setBackground(ui.surface(BG,14));composer.setText(uploads.draft(taskId).text);input.addView(composer,new LinearLayout.LayoutParams(0,-2,1));
             send=primary("发送",()->{String prompt=composer.getText().toString().trim(); if(prompt.isEmpty()&&attachments.isEmpty()){toast("请填写需求或添加附件");return;}JSONArray names=new JSONArray();for(JSONObject file:attachments)names.put(file.optString("name"));JSONObject payload=json("prompt",prompt,"attachments",names);String chosen=uploads.draft(taskId).skillId;if(!chosen.isEmpty())put(payload,"skillId",chosen);taskAction("send",payload);});LinearLayout.LayoutParams sendLayout=new LinearLayout.LayoutParams(dp(64),dp(50));sendLayout.leftMargin=dp(6);input.addView(send,sendLayout);dock.addView(input);
             composerHint=text("在当前项目中执行",11,MUTED);composerHint.setGravity(Gravity.CENTER);dock.addView(composerHint);page.addView(ui.divider());page.addView(dock);
             composer.addTextChangedListener(new TextWatcher(){public void beforeTextChanged(CharSequence s,int start,int count,int after){}public void onTextChanged(CharSequence s,int start,int before,int count){saveDraft();updateControls();}public void afterTextChanged(Editable s){}});
         } else {LinearLayout footer=column();footer.setBackgroundColor(Color.WHITE);footer.setPadding(dp(16),dp(10),dp(16),dp(10));TextView readonly=text("只读任务 · 可以查看对话和保存文件",12,MUTED);readonly.setGravity(Gravity.CENTER);footer.addView(readonly);page.addView(footer);}
-        messageList.setTag(taskId); historySignature=""; questionSignature="";renderAttachments(); updateControls();
+        messageList.setTag(taskId); historySignature=""; questionSignature="";followTail=true;renderAttachments(); updateControls();
+        ConversationMemory.Entry cached=conversations.get(taskId);
+        if(cached!=null&&!cached.history.isEmpty()){try{renderHistory(object(cached.history));}catch(JSONException error){conversations.remove(taskId);}}
+        else {label(messageList,"正在读取对话…");}
+        hint(connectionText());
     }
     private void chooseSkill(){
         if(user==null||task()==null||!task().optBoolean("canExecute")||!mobileControl()||loading)return;
@@ -440,52 +472,81 @@ public final class MainActivity extends Activity {
     }
     private void updateControls() {
         JSONObject selected=task(); if(selected==null||taskState==null)return;
-        boolean owner=selected.optBoolean("canExecute"), connected=snapshot.optBoolean("connected")&&snapshot.optBoolean("signedIn");
+        boolean owner=selected.optBoolean("canExecute"), connected=sync.connected()&&snapshot.optBoolean("connected")&&snapshot.optBoolean("signedIn");
         taskState.setText(uncertain.contains(taskId)?"结果待确认 · 请在右上角菜单刷新状态":(selected.optBoolean("busy")?"● ":"")+status(selected));
         taskState.setTextColor(uncertain.contains(taskId)?0xff976018:selected.optBoolean("busy")?GREEN:MUTED);
-        if(send!=null)send.setEnabled((!loading||quietRequest)&&owner&&mobileControl()&&connected&&!selected.optBoolean("busy")&&!uncertain.contains(taskId)&&!uploads.uploading(taskId)&&hasDraft());
-        if(attach!=null)attach.setEnabled((!loading||quietRequest)&&owner&&mobileControl()&&attachments.size()<3&&uploads.active()==null);
-        if(skillPicker!=null){AttachmentUploads.Draft<JSONObject> draft=uploads.draft(taskId);skillPicker.setText(draft.skillId.isEmpty()?"技能 · 不指定  ▾":"技能 · "+draft.skillTitle+"  ▾");skillPicker.setEnabled((!loading||quietRequest)&&owner&&mobileControl());}
+        if(send!=null)send.setEnabled(!loading&&owner&&mobileControl()&&connected&&!selected.optBoolean("busy")&&!uncertain.contains(taskId)&&!uploads.uploading(taskId)&&hasDraft());
+        if(attach!=null)attach.setEnabled(!loading&&owner&&mobileControl()&&attachments.size()<3&&uploads.active()==null);
+        if(skillPicker!=null){AttachmentUploads.Draft<JSONObject> draft=uploads.draft(taskId);skillPicker.setText(draft.skillId.isEmpty()?"技能 · 不指定  ▾":"技能 · "+draft.skillTitle+"  ▾");skillPicker.setEnabled(!loading&&owner&&mobileControl());}
         if(composer!=null&&composerHint!=null){int length=composer.length();composerHint.setText(!mobileControl()?"已暂停发送 · 可在更多菜单恢复工作台操作":uploads.uploading(taskId)?"附件上传中 · 可以返回，完成后在本任务发送":length>=1000?length+" / 12000 字":selected.optBoolean("busy")?"电脑正在处理，你可以先写下一条需求":"在当前项目中执行 · 文件可在右上角保存");}
         if(stop!=null){stop.setVisibility(owner?View.VISIBLE:View.GONE);stop.setEnabled(!loading&&connected&&!selected.isNull("activeTurn"));}
     }
-    private String connectionText() { return !snapshot.has("connected")?"":!snapshot.optBoolean("connected")?"电脑 Codex 尚未连接，请检查电脑端":!snapshot.optBoolean("signedIn")?"请先在电脑上的 Codex 登录":"已连接电脑 · 进度自动刷新"; }
+    private String connectionText() { return sync.verification()?"需要连接验证 · 请在“连接信息”中完成验证":!sync.connected()?"正在恢复连接 · 显示上次同步内容，草稿已保留":!snapshot.has("connected")?"正在同步…":!snapshot.optBoolean("connected")?"电脑 Codex 尚未连接，请检查电脑端":!snapshot.optBoolean("signedIn")?"请先在电脑上的 Codex 登录":"已连接电脑 · 进度自动刷新"; }
     private void taskAction(String action,JSONObject payload) {
         String selected=taskId;
         run(()->object(api.json("/api/tasks/"+selected+"/"+action,payload.toString())), value->{
-            if(action.equals("send")){if(composer!=null)composer.setText("");attachments.clear();AttachmentUploads.Draft<JSONObject> draft=uploads.draft(selected);draft.skillId="";draft.skillTitle="";uploads.acknowledge(selected);renderAttachments();renderUploadNotice();updateControls();}
+            if(action.equals("send")){followTail=true;conversations.position(selected,0,true);if(composer!=null&&composer.getText().toString().trim().equals(payload.optString("prompt")))composer.setText("");attachments.clear();AttachmentUploads.Draft<JSONObject> draft=uploads.draft(selected);draft.skillId="";draft.skillTitle="";uploads.acknowledge(selected);renderAttachments();renderUploadNotice();updateControls();}
             uncertain.remove(selected); refresh(false);
         },true,selected);
     }
     private void refresh(boolean reconcile) { refresh(reconcile,false); }
     private void refresh(boolean reconcile,boolean quiet) {
-        if(user==null||loading)return;
+        if(user==null||loading||destroyed)return;
         String selected=taskId;
-        run(()->{
-            JSONObject state=object(api.json("/api/status",null)); JSONObject current=find(array(state,"tasks"),selected);
-            JSONObject result=json("state",state);
-            if(current!=null) {
-                if(reconcile&&current.optBoolean("canExecute")) api.json("/api/tasks/"+selected+"/reconcile","{}");
-                put(result,"history",object(api.json("/api/history/"+selected,null)));
-                if(reconcile)put(result,"state",object(api.json("/api/status",null)));
-            }
-            return result;
-        },value->{
-            snapshot=value.optJSONObject("state");user=snapshot.optJSONObject("user");
-            uploads.account(user==null?"":user.optString("id"));Set<String> writable=new HashSet<>();JSONArray taskList=array(snapshot,"tasks");for(int i=0;i<taskList.length();i++){JSONObject item=taskList.optJSONObject(i);if(item!=null&&item.optBoolean("canExecute"))writable.add(item.optString("id"));}uploads.retain(writable);renderUploadNotice();
-            if(showingProfile){updateProfile();hint(connectionText());return;}
-            if(!selected.isEmpty()&&task()==null){taskId="";composer=null;renderLists();hint("任务已不可见或权限已变更");return;}
-            if(!taskId.isEmpty()) {
-                if(composer==null&&task().optBoolean("canExecute")||messageList==null||!taskId.equals(messageList.getTag())) {showChat();messageList.setTag(taskId);}
-                renderHistory(value.optJSONObject("history"));renderQuestions();if(reconcile)uncertain.remove(selected);updateControls();hint(connectionText());
-            } else if(!listContext.equals(projectId)||!projectId.isEmpty()&&project()==null)renderLists();
-            else if(!listSignature.equals(snapshot.toString())){renderRows();hint(connectionText());}
-            else hint(connectionText());
-        },false,null,quiet);
+        if(reconcile&&!selected.isEmpty()&&task()!=null&&task().optBoolean("canExecute")){
+            run(()->object(api.json("/api/tasks/"+selected+"/reconcile","{}")),value->{uncertain.remove(selected);refresh(false);},false,null);
+            return;
+        }
+        if(!quiet)sync.requestNow();
+        ConversationSync.Read read=sync.begin(SystemClock.elapsedRealtime());if(read==null)return;
+        int generation=epoch;String account=user.optString("id");
+        // Capture this login's cookie once; a delayed read cannot borrow a later login.
+        String cookie=cookies.get(ApiClient.ORIGIN);
+        ApiClient reader=new ApiClient(ApiClient.ORIGIN,new ApiClient.Cookies(){public String get(String origin){return cookie;}public void set(String origin,String value){}},12000);
+        syncWorker.execute(()->{
+            JSONObject value=null;Exception failure=null;
+            try{
+                JSONObject state=object(reader.json("/api/status",null));value=json("state",state);
+                if(find(array(state,"tasks"),selected)!=null)put(value,"history",object(reader.json("/api/history/"+selected,null)));
+            }catch(Exception error){failure=error;}
+            JSONObject output=value;Exception error=failure;
+            main.post(()->{
+                if(destroyed)return;
+                boolean samePage=generation==epoch&&user!=null&&account.equals(user.optString("id"));
+                if(!samePage)sync.invalidate();
+                int outcome=error==null?ConversationSync.OK:error instanceof ApiClient.Failure&&((ApiClient.Failure)error).verification?ConversationSync.VERIFICATION:ConversationSync.OFFLINE;
+                if(!sync.finish(read,SystemClock.elapsedRealtime(),outcome)){if(foreground)refresh(false,true);return;}
+                if(error!=null){
+                    if(error instanceof ApiClient.Failure){int status=((ApiClient.Failure)error).status;if(!((ApiClient.Failure)error).verification&&(status==401||status==403||status==404)){showError(error,false,null);return;}}
+                    // Even if history fails, a received permission snapshot must take effect.
+                    if(output!=null)applySnapshot(output);
+                    showConnection();return;
+                }
+                applySnapshot(output);showConnection();
+                if(foreground&&sync.delay(SystemClock.elapsedRealtime())==0)refresh(false,true);
+            });
+        });
+    }
+    private void applySnapshot(JSONObject value){
+        snapshot=value.optJSONObject("state");user=snapshot.optJSONObject("user");
+        if(user==null){clearAccount();showLogin();return;}
+        uploads.account(user.optString("id"));conversations.account(user.optString("id"));
+        Set<String> writable=new HashSet<>(),visible=new HashSet<>();JSONArray taskList=array(snapshot,"tasks");
+        for(int i=0;i<taskList.length();i++){JSONObject item=taskList.optJSONObject(i);if(item!=null){visible.add(item.optString("id"));if(item.optBoolean("canExecute"))writable.add(item.optString("id"));}}
+        uploads.retain(writable);conversations.retain(visible);uncertain.retainAll(writable);renderUploadNotice();
+        if(showingProfile){updateProfile();return;}
+        if(!taskId.isEmpty()&&task()==null){taskId="";composer=null;clearAttachments();renderLists();hint("任务已不可见或权限已变更");return;}
+        if(!taskId.isEmpty()){
+            if((composer==null&&task().optBoolean("canExecute"))||(composer!=null&&!task().optBoolean("canExecute"))||messageList==null||!taskId.equals(messageList.getTag()))showChat();
+            renderHistory(value.optJSONObject("history"));renderQuestions();updateControls();
+        }else if(!listContext.equals(projectId)||!projectId.isEmpty()&&project()==null)renderLists();
+        else if(!listSignature.equals(snapshot.toString()))renderRows();
     }
     private void renderHistory(JSONObject history) {
-        if(history==null)return;String signature=history.toString();if(signature.equals(historySignature))return;historySignature=signature;
-        int oldY=messageScroll.getScrollY(); boolean bottom=messageList.getHeight()-messageScroll.getHeight()-oldY<dp(100);
+        if(history==null||messageScroll==null)return;String signature=history.toString();if(signature.equals(historySignature))return;
+        boolean first=historySignature.isEmpty();ConversationMemory.Entry cached=conversations.get(taskId);
+        int oldY=first&&cached!=null?cached.scrollY:messageScroll.getScrollY();boolean bottom=first?(cached==null||cached.followTail):followTail;
+        historySignature=signature;conversations.history(taskId,signature);restoringScroll=true;int render=++historyRender;
         messageList.removeAllViews();JSONArray turns=array(history,"turns");int count=0;
         for(int i=0;i<turns.length();i++){JSONObject turn=turns.optJSONObject(i);if(turn==null)continue;JSONArray items=array(turn,"items");
             for(int j=0;j<items.length();j++){JSONObject item=items.optJSONObject(j);if(item==null)continue;String type=item.optString("type"),value="";boolean own=type.equals("userMessage");
@@ -500,7 +561,11 @@ public final class MainActivity extends Activity {
         }
         if(count==0){LinearLayout welcome=column();welcome.setPadding(dp(12),dp(38),dp(12),dp(24));TextView title=text("今天想完成什么？",23,INK);title.setTypeface(null,Typeface.BOLD);welcome.addView(title);label(welcome,"把需求发给电脑上的 Codex，\n回复和生成的文件会出现在这里。");space(welcome,18);
             if(task()!=null&&task().optBoolean("canExecute"))for(String example:new String[]{"帮我整理这个项目里的文件","根据我的要求编写一份文档","帮我开发一个小工具"}){Button suggestion=button(example,()->{if(composer!=null){composer.setText(example);composer.setSelection(composer.length());composer.requestFocus();}});LinearLayout.LayoutParams option=new LinearLayout.LayoutParams(-1,-2);option.bottomMargin=dp(8);welcome.addView(suggestion,option);}messageList.addView(welcome);}
-        messageList.addView(questions);ScrollView currentScroll=messageScroll;currentScroll.post(()->{if(messageScroll!=currentScroll||taskId.isEmpty())return;if(bottom)currentScroll.fullScroll(View.FOCUS_DOWN);else currentScroll.scrollTo(0,oldY);});
+        messageList.addView(questions);ScrollView currentScroll=messageScroll;currentScroll.post(()->{
+            if(messageScroll!=currentScroll||taskId.isEmpty()||render!=historyRender)return;
+            followTail=bottom;if(bottom)currentScroll.fullScroll(View.FOCUS_DOWN);else currentScroll.scrollTo(0,oldY);
+            latestReply.setVisibility(bottom?View.GONE:View.VISIBLE);restoringScroll=false;savePosition();
+        });
     }
     private void renderQuestions() {
         JSONArray all=array(snapshot,"questions"), selected=new JSONArray();for(int i=0;i<all.length();i++){JSONObject question=all.optJSONObject(i);if(question!=null&&taskId.equals(question.optString("taskId")))selected.put(question);}
@@ -511,7 +576,7 @@ public final class MainActivity extends Activity {
             form.addView(primary("提交回答",()->{JSONObject values=new JSONObject();for(Map.Entry<String,EditText> answer:answers.entrySet()){String value=answer.getValue().getText().toString().trim();if(value.isEmpty()){answer.getValue().setError("请填写回答");return;}put(values,answer.getKey(),value);}taskAction("answer",json("requestId",request.opt("id"),"answers",values));}));questions.addView(form);
         }
     }
-    private boolean officeName(String name){return name!=null&&name.toLowerCase(Locale.ROOT).matches(".+\\.(docx|pptx)$");}
+    private boolean attachmentName(String name){return name!=null&&name.toLowerCase(Locale.ROOT).matches(".+\\.(docx|pptx|jpe?g|png|webp)$");}
     private void renderAttachments(){
         if(attachmentRows==null)return;attachmentRows.removeAllViews();
         for(JSONObject file:new ArrayList<>(attachments)){
@@ -532,20 +597,20 @@ public final class MainActivity extends Activity {
         if(uploads.active()!=null){toast("有附件正在上传，完成后可继续添加");return;}
         if(attachments.size()>=3){toast("每条需求最多添加 3 个附件");return;}
         showDialog(new AlertDialog.Builder(this).setTitle("添加附件 · 单个最多 " + ApiClient.FILE_LIMIT_LABEL)
-            .setItems(new String[]{"从手机选择 Word / PPT","从项目文件选择"},(d,index)->{if(index==0)pickAttachment();else chooseProjectAttachment();}).setNegativeButton("取消",null).create());
+            .setItems(new String[]{"从手机选择图片","从手机选择 Word / PPT","从项目文件选择"},(d,index)->{if(index<2){imageAttachmentPicker=index==0;pickAttachment();}else chooseProjectAttachment();}).setNegativeButton("取消",null).create());
     }
     private void pickAttachment(){
         pickAttachment(false);
     }
     private void pickAttachment(boolean alternate){
         importTask=taskId;importUser=user.optString("id");alternateAttachmentPicker=alternate;
-        Intent intent=AttachmentSource.picker(alternate);
+        Intent intent=AttachmentSource.picker(alternate,imageAttachmentPicker);
         try{startActivityForResult(intent,72);}catch(ActivityNotFoundException error){importTask=null;importUser=null;toast("手机没有可用的文件选择工具");}
     }
     private void chooseProjectAttachment(){
         String selected=taskId;run(()->json("files",new JSONArray(api.json("/api/tasks/"+selected+"/files",null))),value->{
-            List<JSONObject> available=new ArrayList<>();for(JSONObject file:sorted(array(value,"files")))if(file.optString("name").matches("attachments/[0-9a-f-]{36}/[^/]+")&&officeName(file.optString("name")))available.add(file);
-            if(available.isEmpty()){toast("项目中还没有上传的 Word / PPT 附件");return;}
+            List<JSONObject> available=new ArrayList<>();for(JSONObject file:sorted(array(value,"files")))if(file.optString("name").matches("attachments/[0-9a-f-]{36}/[^/]+")&&attachmentName(file.optString("name")))available.add(file);
+            if(available.isEmpty()){toast("项目中还没有上传的图片或文档附件");return;}
             String[] names=new String[available.size()];for(int i=0;i<names.length;i++)names[i]=available.get(i).optString("name")+"\n"+MessageFormat.size(available.get(i).optLong("size"));
             showDialog(new AlertDialog.Builder(this).setTitle("选择项目附件").setItems(names,(d,index)->addAttachment(available.get(index))).setNegativeButton("取消",null).create());
         },false,null);
@@ -648,14 +713,11 @@ public final class MainActivity extends Activity {
     private interface Work { JSONObject perform() throws Exception; }
     private interface Result { void accept(JSONObject value); }
     private void run(Work work,Result result,boolean mutation,String affectedTask) {
-        run(work,result,mutation,affectedTask,false);
-    }
-    private void run(Work work,Result result,boolean mutation,String affectedTask,boolean quiet) {
-        if(loading||destroyed)return;loading=true;quietRequest=quiet;int generation=epoch;if(progress!=null)progress.setVisibility(quiet?View.INVISIBLE:View.VISIBLE);if(!taskId.isEmpty())updateControls();
+        if(loading||destroyed)return;sync.invalidate();loading=true;int generation=epoch;if(progress!=null)progress.setVisibility(View.VISIBLE);if(!taskId.isEmpty())updateControls();
         worker.execute(()->{
             JSONObject value=null;Exception failure=null;try{value=work.perform();}catch(Exception error){failure=error;}
             JSONObject output=value;Exception error=failure;
-            main.post(()->{if(destroyed)return;loading=false;quietRequest=false;if(progress!=null)progress.setVisibility(View.INVISIBLE);if(generation!=epoch){updateControls();return;}
+            main.post(()->{if(destroyed)return;sync.invalidate();loading=false;if(progress!=null)progress.setVisibility(View.INVISIBLE);if(generation!=epoch){updateControls();return;}
                 if(error==null)result.accept(output);else showError(error,mutation,affectedTask);
                 if(!taskId.isEmpty())updateControls();
             });
@@ -663,9 +725,9 @@ public final class MainActivity extends Activity {
     }
     private void showError(Exception error,boolean mutation,String affectedTask) {
         if(error instanceof ApiClient.Failure){ApiClient.Failure failure=(ApiClient.Failure)error;
-            if(failure.status==401){epoch++;user=null;snapshot=new JSONObject();projectId="";taskId="";searchQuery="";uncertain.clear();exportTask=null;showLogin();hint("登录已过期，或账号密码不正确，请重新登录");return;}
-            if(failure.status==403||failure.status==404){taskId="";projectId="";snapshot=new JSONObject();renderLists();}
             if(failure.verification){hint(showingProfile?"需要连接验证：点“连接信息”→“连接验证”。":"需要连接验证：点右上角“更多”→“连接与账号”。");if(mutation&&affectedTask!=null)uncertain.add(affectedTask);return;}
+            if(failure.status==401){clearAccount();showLogin();hint("登录已过期，或账号密码不正确，请重新登录");return;}
+            if(failure.status==403||failure.status==404){epoch++;sync.invalidate();conversations.account("");uploads.account("");clearAttachments();taskId="";projectId="";snapshot=new JSONObject();renderLists();}
             if(mutation&&affectedTask!=null&&failure.status>=500)uncertain.add(affectedTask);
             String message="操作失败（"+failure.status+"）";try{message=new JSONObject(failure.getMessage()).optString("error",message);}catch(JSONException ignored){}
             hint(message);

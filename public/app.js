@@ -1,6 +1,7 @@
 const $ = id => document.getElementById(id);
 const state = { user: null, setup: false, setupAllowed: false, updates: 'events', tab: 'mobile', projects: [], tasks: [], questions: [], connected: false, signedIn: false, operations: new Set(), uncertain: new Set(), projectId: '', taskId: '', epoch: 0, selection: 0, refreshId: 0, detailId: 0, stream: null };
 const labels = { pending: '待首次发送', idle: '待开始', starting: '正在启动', running: '执行中', completed: '已完成', interrupted: '已停止', failed: '失败', unknown: '待核实', waiting: '等待回答' };
+const taskStatus = task => task.desktopAttention ? '请在电脑 Codex 中确认或回答' : labels[task.status] || task.status;
 let userListVersion = 0;
 const passwordViews = new Set();
 function hideManagedPasswords() { for (const hide of passwordViews) hide(); }
@@ -123,7 +124,7 @@ function render() {
     for (const task of tasks) {
       const button = document.createElement('button'); button.className = 'task-card' + (task.id === state.taskId ? ' active' : '');
       const title = document.createElement('strong'); title.textContent = task.name;
-      const meta = document.createElement('small'); meta.textContent = `${task.projectName} · ${labels[task.status] || task.status}`;
+      const meta = document.createElement('small'); meta.textContent = `${task.projectName} · ${taskStatus(task)}`;
       button.append(title, meta); button.onclick = () => selectTask(task).catch(e => error(e.message)); $('task-list').append(button);
     }
     if (!tasks.length) { const text = document.createElement('p'); text.className = 'muted'; text.textContent = query ? '没有匹配的可见任务' : '这个列表中还没有任务'; $('task-list').append(text); }
@@ -137,7 +138,7 @@ function renderControls() {
   $('readonly-hint').classList.toggle('hidden', !task || task.canExecute);
   $('readonly-hint').textContent = task?.source === 'desktop' ? '已登记的电脑任务当前仅可查看与下载成果。' : '共享项目仅可查看，只有所有者可以发送需求。';
   if (!task) return;
-  $('task-status').textContent = labels[task.status] || task.status;
+  $('task-status').textContent = taskStatus(task);
   const handedOff = task.control && task.control !== 'mobile';
   const locked = state.operations.has(task.id) || handedOff, available = state.connected && state.signedIn;
   $('send').disabled = locked || task.busy || !available || state.uncertain.has(task.id);
@@ -225,7 +226,7 @@ async function selectTask(task) {
   const epoch = state.epoch, selection = state.selection;
   $('empty').classList.add('hidden'); $('detail').classList.remove('hidden');
   $('task-title').textContent = task.name; $('source').textContent = task.source === 'mobile' ? '手机任务' : '电脑任务';
-  $('task-status').textContent = labels[task.status] || task.status; $('messages').textContent = '正在读取对话…'; render();
+  $('task-status').textContent = taskStatus(task); $('messages').textContent = '正在读取对话…'; render();
   try {
     const history = await api(`/history/${task.id}`);
     if (epoch !== state.epoch || selection !== state.selection) return;

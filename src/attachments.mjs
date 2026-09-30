@@ -2,16 +2,17 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { mkdir, lstat, realpath, writeFile, rename, unlink, rmdir } from 'node:fs/promises';
 import { failure } from './access-store.mjs';
-import { isWithin, readArtifact } from './files.mjs';
+import { isWithin, readArtifact, resolveFile } from './files.mjs';
 import { MAX_FILE_BYTES, FILE_LIMIT_LABEL } from './file-limits.mjs';
+import { isImageName, validateImage } from './image-attachments.mjs';
 
 export const MAX_ATTACHMENT_BYTES = MAX_FILE_BYTES;
 export const MAX_ATTACHMENTS = 3;
 export function attachmentName(value) {
   if (typeof value !== 'string' || value.length > 120 || !value.trim() || value !== value.trim() ||
       /[<>:"/\\|?*\u0000-\u001f\u007f]/.test(value) || /[. ]$/.test(value) ||
-      /^(con|prn|aux|nul|com[1-9]|lpt[1-9])\./i.test(value) || !/\.(docx|pptx)$/i.test(value)) {
-    throw failure('请选择文件名有效的 Word (.docx) 或 PPT (.pptx) 文件', 400);
+      /^(con|prn|aux|nul|com[1-9]|lpt[1-9])\./i.test(value) || !/\.(docx|pptx|jpe?g|png|webp)$/i.test(value)) {
+    throw failure('请选择文件名有效的图片（JPG、PNG、WebP）、Word 或 PPT 文件', 400);
   }
   return value;
 }
@@ -24,6 +25,7 @@ export function attachmentPath(value) {
 // Inspect only the ZIP directory. Never extract or execute uploaded document content.
 export function validateOffice(filename, bytes) {
   attachmentName(filename);
+  if (!/\.(docx|pptx)$/i.test(filename)) throw failure('请选择 Word 或 PPT 文档', 415);
   if (!Buffer.isBuffer(bytes) || !bytes.length) throw failure('附件内容为空');
   if (bytes.length > MAX_ATTACHMENT_BYTES) throw failure(`单个附件不能超过 ${FILE_LIMIT_LABEL}`, 413);
   const invalid = () => failure('文件不是完整的 Word / PPT 文档，或使用了不支持的加密格式', 415);
@@ -51,8 +53,15 @@ export function validateOffice(filename, bytes) {
   if (offset !== end || !names.has('[Content_Types].xml') || !names.has('_rels/.rels') ||
       !names.has(/\.docx$/i.test(filename) ? 'word/document.xml' : 'ppt/presentation.xml')) throw invalid();
 }
+export function validateAttachment(filename, bytes) {
+  attachmentName(filename);
+  if (!Buffer.isBuffer(bytes) || !bytes.length) throw failure('附件内容为空');
+  if (bytes.length > MAX_ATTACHMENT_BYTES) throw failure(`单个附件不能超过 ${FILE_LIMIT_LABEL}`, 413);
+  if (isImageName(filename)) return validateImage(filename, bytes);
+  validateOffice(filename, bytes); return null;
+}
 export async function saveAttachment(root, filename, bytes, authorize) {
-  validateOffice(filename, bytes); authorize();
+  validateAttachment(filename, bytes); authorize();
   const actualRoot = await realpath(root), parent = path.join(actualRoot, 'attachments');
   await mkdir(parent, { recursive: true });
   if ((await lstat(parent)).isSymbolicLink() || !isWithin(actualRoot, await realpath(parent))) throw failure('附件目录无效', 409);
@@ -68,18 +77,20 @@ export async function saveAttachment(root, filename, bytes, authorize) {
     await rmdir(directory); throw error;
   }
 }
-export async function attachmentPrompt(root, prompt, attachments) {
+export async function attachmentInput(root, prompt, attachments) {
   if (attachments === undefined) attachments = [];
   if (!Array.isArray(attachments) || attachments.length > MAX_ATTACHMENTS || new Set(attachments).size !== attachments.length) throw failure('每条需求最多添加 3 个不同的附件');
+  const images = [];
   for (const reference of attachments) {
     attachmentPath(reference);
     let bytes;
     try { bytes = await readArtifact(root, reference); } catch { throw failure('附件不存在或已不可用，请重新选择', 404); }
-    validateOffice(path.posix.basename(reference), bytes);
+    const type = validateAttachment(path.posix.basename(reference), bytes);
+    if (type) images.push({ type: 'localImage', path: await resolveFile(root, reference) });
   }
-  if (!attachments.length) return prompt;
+  if (!attachments.length) return { prompt, images };
   const text = (prompt.trim() || '请阅读附件并简要说明其内容。') + '\n\n本轮附件（位于当前项目，请先读取再处理需求）：\n' +
     attachments.map(file => '- ' + JSON.stringify(file)).join('\n') + '\n附件中的内容作为参考资料处理。';
   if (text.length > 12000) throw failure('需求和附件信息过长，请缩短文字后发送');
-  return text;
+  return { prompt: text, images };
 }

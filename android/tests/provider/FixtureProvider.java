@@ -39,7 +39,7 @@ public final class FixtureProvider extends ContentProvider {
         File file=new File(getContext().getCacheDir(),"provider-file");
         try(OutputStream out=new FileOutputStream(file)){
             if(scenario.equals("invalid"))out.write("not a presentation".getBytes("UTF-8"));
-            else if(!scenario.equals("empty"))try(InputStream input=getContext().getAssets().open(scenario.equals("word")?"word.docx":"slides.pptx")){
+            else if(!scenario.equals("empty"))try(InputStream input=getContext().getAssets().open(scenario.startsWith("image-")?"vision-fixture."+scenario.substring(6):scenario.equals("word")?"word.docx":"slides.pptx")){
                 byte[] b=new byte[4096];int n;while((n=input.read(b))!=-1)out.write(b,0,n);
             }
         }catch(IOException error){throw new FileNotFoundException(error.toString());}

@@ -137,3 +137,50 @@ test('交接落盘期间注销会阻止关闭；未生成对话的任务给出�
   await assert.rejects(f.workbench.transfer(f.b.id,'desktop'),/先在手机完成一次对话/);
   assert.equal(f.workers[2].closeCalled,undefined);
 });
+
+
+test('普通发送的会话占用明确返回 409；图片引用保留，释放后只在手动重试时发送',async t=>{
+  const f=await fixture(t);const bytes=await readFile('test/fixtures/attachments/vision-fixture.png');
+  const upload=await fetch(f.origin+`/api/tasks/${f.a.id}/attachments?name=photo.png`,{method:'POST',headers:{Cookie:'codex_link_session='+f.owner.token,'X-Local-Client':'1','Content-Type':'application/octet-stream'},body:bytes});
+  assert.equal(upload.status,201);const file=await upload.json();
+  await f.client.releaseThread(f.a.id);f.workbench.loaded.delete(f.a.id);
+  const factory=f.client.factory;f.client.factory=()=>{const worker=factory();worker.handler=()=>{throw Error('thread private-id already has an active writer at C:/private/path');};return worker;};
+  const payload={prompt:'查看图片',attachments:[file.name]};
+  const rejected=await f.call(`/tasks/${f.a.id}/send`,payload);
+  assert.equal(rejected.status,409);assert.match(rejected.data.error,/电脑仍占用/);assert.match(rejected.data.error,/手动重试/);
+  assert.doesNotMatch(rejected.data.error,/private-id|private\/path|检查服务状态/);
+  const task=f.workbench.task(f.a.id);assert.equal(task.status,'failed');assert.equal(task.busy,false);assert.equal(task.error,rejected.data.error);
+  assert.equal(f.workbench.loaded.has(task.id),false);assert.equal(f.client.hasThread(task.id),false);
+  assert.equal(f.workers.flatMap(w=>w.calls).filter(c=>c.method==='turn/start').length,0);
+  const saved=JSON.parse(await readFile(path.join(f.root,'registry.json'),'utf8'));assert.equal(saved.tasks.find(t=>t.id===task.id).error,rejected.data.error);
+  assert.equal(f.workers[2].closed,false);f.client.factory=factory;
+  assert.equal((await f.call(`/tasks/${task.id}/send`,payload)).status,200);
+  const turns=f.workers.flatMap(w=>w.calls).filter(c=>c.method==='turn/start');assert.equal(turns.length,1);assert.equal(turns[0].params.input[1].type,'localImage');
+});
+
+test('已归档任务在发送和恢复入口说明原因；不自动取消归档或重发',async t=>{
+  const f=await fixture(t);
+  await f.client.releaseThread(f.a.id);f.workbench.loaded.delete(f.a.id);
+  const factory=f.client.factory;f.client.factory=()=>{const worker=factory();worker.handler=()=>{throw Error('session private-id is archived. Run `codex unarchive private-id` to unarchive it first.');};return worker;};
+  const rejected=await f.call(`/tasks/${f.a.id}/send`,{prompt:'继续处理'});
+  assert.equal(rejected.status,409);assert.match(rejected.data.error,/已在电脑 Codex 中归档/);assert.match(rejected.data.error,/手动发送/);
+  assert.doesNotMatch(rejected.data.error,/private-id|codex unarchive|检查服务状态/);
+  const task=f.workbench.task(f.a.id);assert.equal(task.busy,false);assert.equal(task.status,'failed');
+  assert.equal(f.workbench.loaded.has(task.id),false);assert.equal(f.client.hasThread(task.id),false);
+  task.controlTarget='desktop';
+  const restored=await f.call(`/tasks/${task.id}/transfer`,{target:'mobile'});
+  assert.equal(restored.status,409);assert.match(restored.data.error,/归档/);assert.equal(task.controlTarget,'desktop');
+  assert.equal(f.workers.flatMap(w=>w.calls).some(c=>['thread/unarchive','turn/start'].includes(c.method)),false);
+  assert.equal(f.workers[2].closed,false);
+  f.client.factory=factory;task.controlTarget='mobile';
+  assert.equal((await f.call(`/tasks/${task.id}/send`,{prompt:'恢复后手动发送'})).status,200);
+  assert.equal(f.workers.flatMap(w=>w.calls).filter(c=>c.method==='turn/start').length,1);
+});
+
+test('非归档的未知恢复错误仍不向网页泄露原始诊断',async t=>{
+  const f=await fixture(t);await f.client.releaseThread(f.a.id);f.workbench.loaded.delete(f.a.id);
+  const factory=f.client.factory;f.client.factory=()=>{const worker=factory();worker.handler=()=>{throw Error('cannot read C:/private/secret.json');};return worker;};
+  const response=await f.call(`/tasks/${f.a.id}/send`,{prompt:'继续处理'});
+  assert.equal(response.status,400);assert.equal(response.data.error,'操作失败，请在本机检查服务状态');
+  assert.equal(f.workers.flatMap(w=>w.calls).some(c=>c.method==='turn/start'),false);
+});

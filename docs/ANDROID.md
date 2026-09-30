@@ -25,12 +25,12 @@ npm run android:build
 powershell -NoProfile -ExecutionPolicy Bypass -File android/build.ps1 -JdkPath $env:JAVA_HOME -BuildToolsPath $env:ANDROID_BUILD_TOOLS -AndroidJar $env:ANDROID_JAR -ServerOrigin $env:CODEXLINK_ORIGIN
 ```
 
-脚本先运行 JVM 检查，再编译、打包、对齐、签名和校验。服务地址仅写入临时构建副本与产物，不回写源码。仓库里的 `https://codexlink.example.invalid` 是不可访问的占位地址，不是公共服务。
+脚本先运行 JVM 检查（含会话同步与缓存），再编译、打包、对齐、签名和校验。服务地址仅写入临时构建副本与产物，不回写源码。仓库里的 `https://codexlink.example.invalid` 是不可访问的占位地址，不是公共服务。
 
 产物：
 
 ```text
-android/output/CodexLink-0.9.0.apk
+android/output/CodexLink-0.12.0.apk
 android/output/release.json
 ```
 

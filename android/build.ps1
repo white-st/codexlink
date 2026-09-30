@@ -59,6 +59,8 @@ Invoke-Checked $taskJavac @('-J-Duser.language=en','-encoding','UTF-8','--releas
 Invoke-Checked $taskJava @('-cp',"$taskBuild\tests",'com.codexlink.mobile.MessageFormatTest')
 Invoke-Checked $taskJavac @('-J-Duser.language=en','-encoding','UTF-8','--release','8','-d',"$taskBuild\tests","$taskSourceRoot\com\codexlink\mobile\AttachmentUploads.java","$taskRoot\tests\AttachmentUploadsTest.java")
 Invoke-Checked $taskJava @('-cp',"$taskBuild\tests",'com.codexlink.mobile.AttachmentUploadsTest')
+Invoke-Checked $taskJavac @('-J-Duser.language=en','-encoding','UTF-8','--release','8','-d',"$taskBuild\tests","$taskSourceRoot\com\codexlink\mobile\ConversationSync.java","$taskSourceRoot\com\codexlink\mobile\ConversationMemory.java","$taskRoot\tests\ConversationSyncTest.java")
+Invoke-Checked $taskJava @('-Xmx32m','-cp',"$taskBuild\tests",'com.codexlink.mobile.ConversationSyncTest')
 Invoke-Checked $taskAapt @('compile','--dir',"$taskRoot\res",'-o',"$taskBuild\resources.zip")
 Invoke-Checked $taskAapt @('link','-o',"$taskBuild\resources.apk",'--manifest',"$taskRoot\AndroidManifest.xml",'-I',$AndroidJar,'--java',"$taskBuild\generated",'--auto-add-overlay',"$taskBuild\resources.zip")
 $taskSources = @(Get-ChildItem -LiteralPath "$taskSourceRoot","$taskBuild\generated" -Filter '*.java' -Recurse | ForEach-Object { $_.FullName })

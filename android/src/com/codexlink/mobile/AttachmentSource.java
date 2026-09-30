@@ -11,8 +11,11 @@ import java.nio.file.Files;
 /** Read a selected content URI once; release our private copy after upload or any failure. */
 final class AttachmentSource {
     static Intent picker(boolean alternate){
+        return picker(alternate,false);
+    }
+    static Intent picker(boolean alternate,boolean imagesOnly){
         return new Intent(alternate?Intent.ACTION_OPEN_DOCUMENT:Intent.ACTION_GET_CONTENT)
-            .addCategory(Intent.CATEGORY_OPENABLE).setType("*/*").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            .addCategory(Intent.CATEGORY_OPENABLE).setType(imagesOnly?"image/*":"*/*").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
     }
     static final class ReadFailure extends ApiClient.Failure {
         final String detail;
@@ -73,7 +76,7 @@ final class AttachmentSource {
                 catch(IOException|SecurityException error){throw problem(uri,resultFlags,"cache",error);}
             }
             String filename;
-            try{filename=OfficeAttachment.filename(file,displayName);}
+            try{filename=AttachmentFile.filename(file,displayName);}
             catch(ApiClient.Failure error){throw error;}
             catch(IOException|SecurityException error){throw problem(uri,resultFlags,"verify",error);}
             Staged result=new Staged(file,filename);complete=true;return result;

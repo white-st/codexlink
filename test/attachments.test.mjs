@@ -12,6 +12,7 @@ import { validateOffice, MAX_ATTACHMENT_BYTES, saveAttachment } from '../src/att
 
 const docx = await readFile('test/fixtures/attachments/中文说明.docx');
 const pptx = await readFile('test/fixtures/attachments/演示文稿.pptx');
+const pictures = await Promise.all(['jpg', 'png', 'webp'].map(async ext => [ext, await readFile(`test/fixtures/attachments/vision-fixture.${ext}`)]));
 async function fixture(t) {
   await mkdir('.runtime/tests', { recursive: true });
   const root = await mkdtemp(path.resolve('.runtime/tests/attachments-'));
@@ -34,6 +35,58 @@ async function fixture(t) {
   const upload = (name, data = docx, token = owner.token, headers = {}) => fetch(origin + `/api/tasks/${task.id}/attachments?name=${encodeURIComponent(name)}`, { method: 'POST', headers: { Cookie: 'codex_link_session=' + token, 'X-Local-Client': '1', 'Content-Type': 'application/octet-stream', ...headers }, body: data });
   return { root, access, portal, workbench, calls, owner, other, viewer, project, task, cwd, server, origin, call, upload };
 }
+
+test('三种图片原字节上传下载，只有图片也发送为真实 localImage 输入', async t => {
+  const f = await fixture(t), uploaded = [];
+  for (const [ext, bytes] of pictures) {
+    const res = await f.upload(`中文图片.${ext}`, bytes);assert.equal(res.status, 201);
+    const file = await res.json();uploaded.push(file.name);
+    const download = await f.call(`/tasks/${f.task.id}/file?name=${encodeURIComponent(file.name)}`);
+    assert.deepEqual(Buffer.from(await download.arrayBuffer()), bytes);
+  }
+  assert.equal((await f.call(`/tasks/${f.task.id}/send`, { prompt: '', attachments: uploaded })).status, 200);
+  const input = f.calls.find(c => c.method === 'turn/start').params.input;
+  assert.equal(input[0].type, 'text');assert.match(input[0].text, /中文图片/);
+  assert.deepEqual(input.slice(1), uploaded.map(name => ({ type: 'localImage', path: path.join(f.cwd, name) })));
+});
+
+test('图片格式伪装、缺末尾与损坏容器拒绝；发送前重新验证，任意图片路径不能注入', async t => {
+  const f = await fixture(t);
+  for (const [ext, bytes] of pictures) {
+    for (const fake of [Buffer.from('not an image'), bytes.subarray(0, bytes.length - 4)]) assert.equal((await f.upload(`bad.${ext}`, fake)).status, 415);
+  }
+  assert.equal((await f.upload('wrong.png', pictures[0][1])).status, 415);
+  assert.equal((await f.upload('wrong.docx', pictures[1][1])).status, 415);
+  for (const name of ['image.svg', 'image.gif', 'image.heic', '../image.jpg']) assert.equal((await f.upload(name, pictures[0][1])).status, 400);
+  const uploaded = await (await f.upload('photo.jpeg', pictures[0][1])).json();
+  await writeFile(path.join(f.cwd, uploaded.name), 'changed after uploading');
+  assert.equal((await f.call(`/tasks/${f.task.id}/send`, { prompt: '看图', attachments: [uploaded.name] })).status, 415);
+  assert.equal((await f.call(`/tasks/${f.task.id}/send`, { prompt: '看图', images: [{ type: 'localImage', path: 'C:/private.jpg' }] })).status, 400);
+  assert.equal(f.calls.filter(c => c.method === 'turn/start').length, 0);
+});
+
+test('图片继承私有、等级共享、撤销和跨项目引用规则，文档图片混合不丢输入', async t => {
+  const f = await fixture(t), png = pictures[1][1];
+  assert.equal((await f.upload('a.png', png, '')).status, 401);
+  assert.equal((await f.upload('a.png', png, f.viewer.token)).status, 404);
+  const file = await (await f.upload('a.png', png)).json();
+  await f.portal.updateProject(f.owner.user.id, f.project.id, { shared: true });
+  const route = `/tasks/${f.task.id}/file?name=${encodeURIComponent(file.name)}`;
+  assert.equal((await f.call(route, undefined, f.viewer.token)).status, 404);
+  await f.portal.updateProject(f.owner.user.id, f.project.id, { level: 1 });
+  assert.equal((await f.call(route, undefined, f.viewer.token)).status, 200);
+  assert.equal((await f.upload('a.png', png, f.viewer.token)).status, 403);
+  assert.equal((await f.call(`/tasks/${f.task.id}/send`, { prompt: '看图', attachments: [file.name] }, f.viewer.token)).status, 403);
+  await f.portal.updateProject(f.owner.user.id, f.project.id, { shared: false });
+  assert.equal((await f.call(route, undefined, f.viewer.token)).status, 404);
+  const second = await f.portal.createProject(f.owner.user.id, { name: '另一个图片项目' });
+  const secondTask = await f.portal.createTask(f.owner.user.id, { projectId: second.id, name: '拒绝跨项目' });
+  assert.equal((await f.call(`/tasks/${secondTask.id}/send`, { prompt: '看图', attachments: [file.name] })).status, 404);
+  const doc = await (await f.upload('word.docx')).json();
+  assert.equal((await f.call(`/tasks/${f.task.id}/send`, { prompt: '综合处理', attachments: [file.name, doc.name] })).status, 200);
+  const input = f.calls.find(c => c.method === 'turn/start').params.input;
+  assert.equal(input.length, 2);assert.match(input[0].text, /word.docx/);assert.equal(input[1].type, 'localImage');
+});
 test('Word/PPT 上传落盘字节一致、同名不覆盖，引用进入实际 Codex 需求，附件可单独发送', async t => {
   const f = await fixture(t); const uploaded = [];
   for (const [name, bytes] of [['中文说明.docx', docx], ['演示文稿.pptx', pptx], ['中文说明.docx', docx]]) {
